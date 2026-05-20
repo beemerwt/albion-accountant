@@ -11,8 +11,14 @@ use tracing::{debug, error, info, warn};
 
 use crate::{albion::transaction::MarketTransaction, config::Config};
 
+fn install_rustls_provider() {
+    let _ = rustls::crypto::ring::default_provider()
+        .install_default();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_rustls_provider();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

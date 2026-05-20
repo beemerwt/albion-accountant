@@ -22,6 +22,7 @@ dependencies = [
  "hyper-util",
  "pcap",
  "regex",
+ "rustls",
  "serde_json",
  "temp-env",
  "thiserror",
