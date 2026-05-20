@@ -42,6 +42,22 @@ Spreadsheet ID comes from URLs like:
 
 Use only the `SPREADSHEET_ID_HERE` part. `gid=0` is a sheet/tab identifier, not the spreadsheet ID.
 
+## Decoder support
+
+The decoder supports **Photon command envelopes with Protocol16-typed payloads only**.
+
+- Supported: Photon `Event` and `OperationResponse` messages decoded through Protocol16.
+- Removed: legacy regex/JSON text fallback decoding paths.
+- There are no runtime config/env decode-mode switches; decoding is protocol-only.
+
+## Troubleshooting capture conditions
+
+If you do not see transactions, verify these capture prerequisites:
+
+- **IPv4/UDP visibility**: traffic must be visible as IPv4 UDP frames on the selected interface.
+- **Privileges**: run with sufficient packet-capture privileges (root or `cap_net_raw,cap_net_admin`).
+- **Correct interface**: choose the interface that carries Albion traffic (confirm with `--list-interfaces`).
+
 ## Usage
 
 ```bash
