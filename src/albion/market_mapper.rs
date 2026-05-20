@@ -138,6 +138,23 @@ mod tests {
         ])
     }
 
+
+    #[test]
+    fn operation_opcode_mapping_accepts_supported_and_rejects_unsupported() {
+        let supported = DecodedOperationResponse {
+            op_code: ids::MARKET_OPERATION_CODES[0],
+            return_code: 0,
+            params: valid_market_params(),
+        };
+        assert!(map_response_to_transaction(&supported).is_some());
+
+        let unsupported = DecodedOperationResponse {
+            op_code: 0xff,
+            return_code: 0,
+            params: valid_market_params(),
+        };
+        assert!(map_response_to_transaction(&unsupported).is_none());
+    }
     #[test]
     fn maps_supported_event_code_to_market_transaction() {
         let event = DecodedEvent {
