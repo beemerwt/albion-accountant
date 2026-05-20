@@ -34,32 +34,81 @@ pub fn map_response_to_transaction(
 }
 
 fn build_transaction(params: &BTreeMap<String, ProtocolValue>) -> Option<MarketTransaction> {
-    let location = read_string_any(params, ids::LOCATION_KEYS)?;
-    let item = read_string_any(params, ids::ITEM_ID_KEYS)?;
-    let quantity = read_u32_any(params, ids::QUANTITY_KEYS)?;
-    let per_item_cost = read_u64_any(params, ids::SILVER_KEYS)?;
+    let location = read_required_string(
+        params,
+        ids::LOCATION_KEY,
+        ids::LOCATION_KEY_ALIASES,
+        "location",
+    )?;
+    let item = read_required_string(params, ids::ITEM_ID_KEY, ids::ITEM_ID_KEY_ALIASES, "item")?;
+    let quantity = read_required_u32(
+        params,
+        ids::QUANTITY_KEY,
+        ids::QUANTITY_KEY_ALIASES,
+        "qty",
+    )?;
+    let per_item_cost =
+        read_required_u64(params, ids::SILVER_KEY, ids::SILVER_KEY_ALIASES, "price")?;
     MarketTransaction::new(location, item, quantity, per_item_cost, None).ok()
 }
 
-fn read_string_any(params: &BTreeMap<String, ProtocolValue>, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|k| match params.get(*k)? {
+fn read_required_string(
+    params: &BTreeMap<String, ProtocolValue>,
+    canonical: &str,
+    aliases: &[&str],
+    label: &str,
+) -> Option<String> {
+    read_string(params, canonical).or_else(|| {
+        aliases.iter().find_map(|k| read_string(params, k)).or_else(|| {
+            tracing::debug!(field = label, canonical, aliases = ?aliases, "missing required field");
+            None
+        })
+    })
+}
+
+fn read_required_u32(
+    params: &BTreeMap<String, ProtocolValue>,
+    canonical: &str,
+    aliases: &[&str],
+    label: &str,
+) -> Option<u32> {
+    read_u32(params, canonical).or_else(|| {
+        aliases.iter().find_map(|k| read_u32(params, k)).or_else(|| {
+            tracing::debug!(field = label, canonical, aliases = ?aliases, "missing required field");
+            None
+        })
+    })
+}
+
+fn read_required_u64(
+    params: &BTreeMap<String, ProtocolValue>,
+    canonical: &str,
+    aliases: &[&str],
+    label: &str,
+) -> Option<u64> {
+    read_u64(params, canonical).or_else(|| {
+        aliases.iter().find_map(|k| read_u64(params, k)).or_else(|| {
+            tracing::debug!(field = label, canonical, aliases = ?aliases, "missing required field");
+            None
+        })
+    })
+}
+
+fn read_string(params: &BTreeMap<String, ProtocolValue>, key: &str) -> Option<String> {
+    match params.get(key)? {
         ProtocolValue::String(s) if !s.is_empty() => Some(s.clone()),
         _ => None,
-    })
+    }
 }
 
-fn read_u32_any(params: &BTreeMap<String, ProtocolValue>, keys: &[&str]) -> Option<u32> {
-    keys.iter().find_map(|k| {
-        as_u64(params.get(*k)?)
-            .and_then(|v| u32::try_from(v).ok())
-            .filter(|v| *v > 0)
-    })
-}
-
-fn read_u64_any(params: &BTreeMap<String, ProtocolValue>, keys: &[&str]) -> Option<u64> {
-    keys.iter()
-        .find_map(|k| as_u64(params.get(*k)?))
+fn read_u32(params: &BTreeMap<String, ProtocolValue>, key: &str) -> Option<u32> {
+    as_u64(params.get(key)?)
+        .and_then(|v| u32::try_from(v).ok())
         .filter(|v| *v > 0)
+}
+
+fn read_u64(params: &BTreeMap<String, ProtocolValue>, key: &str) -> Option<u64> {
+    as_u64(params.get(key)?).filter(|v| *v > 0)
 }
 
 fn as_u64(v: &ProtocolValue) -> Option<u64> {
