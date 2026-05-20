@@ -1,3 +1,12 @@
+// Maintainer architecture note:
+// 1) transport::parse_udp_payload splits Photon UDP datagrams into frames.
+// 2) commands::decode_command_envelope parses each frame into PhotonMessage metadata + payload.
+// 3) events::decode_event_payload / operations::decode_operation_payload decode Protocol16 maps.
+// 4) market_mapper converts decoded protocol fields into MarketTransaction domain objects.
+//
+// To extend decoding for new opcodes, keep protocol parsing generic and add mapping logic in
+// market_mapper (and ids as needed), keyed by event code / operation code.
+
 use super::{
     ids,
     market_mapper::{
