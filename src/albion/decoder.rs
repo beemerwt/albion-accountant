@@ -1,8 +1,15 @@
 use regex::Regex;
 
 use super::{
+    ids,
+    market_mapper::{
+        DecodedEvent, DecodedOperationResponse, map_event_to_transaction,
+        map_response_to_transaction,
+    },
     protocol::{
         commands::{PhotonMessage, decode_command_envelope},
+        events::decode_event_payload,
+        protocol16::ProtocolValue,
         transport::parse_udp_payload,
     },
     transaction::MarketTransaction,
@@ -28,16 +35,74 @@ pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTran
 
     messages
         .iter()
-        .filter_map(|m| std::str::from_utf8(&m.payload).ok())
-        .filter_map(|text| re.captures(text))
-        .filter_map(|captures| {
-            let location = captures.name("location")?.as_str().to_string();
-            let item = captures.name("item")?.as_str().to_string();
-            let qty: u32 = captures.name("qty")?.as_str().parse().ok()?;
-            let price: u64 = captures.name("price")?.as_str().parse().ok()?;
-            MarketTransaction::new(location, item, qty, price, None).ok()
-        })
+        .filter_map(|m| map_message_to_transaction(m).or_else(|| map_text_fallback(m, &re)))
         .collect()
+}
+
+fn map_message_to_transaction(message: &PhotonMessage) -> Option<MarketTransaction> {
+    let event_map = decode_event_payload(&message.payload).ok()?;
+    if let Some(event) = decoded_event_from_map(&event_map) {
+        if let Some(tx) = map_event_to_transaction(&event) {
+            return Some(tx);
+        }
+    }
+    if let Some(response) = decoded_response_from_map(&event_map) {
+        if let Some(tx) = map_response_to_transaction(&response) {
+            return Some(tx);
+        }
+    }
+    None
+}
+
+fn decoded_event_from_map(
+    map: &std::collections::BTreeMap<String, ProtocolValue>,
+) -> Option<DecodedEvent> {
+    let code = match map.get(ids::KEY_EVENT_CODE)? {
+        ProtocolValue::Byte(v) => *v,
+        ProtocolValue::Short(v) => u8::try_from(*v).ok()?,
+        ProtocolValue::Int(v) => u8::try_from(*v).ok()?,
+        _ => return None,
+    };
+    let params = match map.get(ids::KEY_PARAMS)? {
+        ProtocolValue::Dictionary(v) | ProtocolValue::Hashtable(v) => v.clone(),
+        _ => return None,
+    };
+    Some(DecodedEvent { code, params })
+}
+
+fn decoded_response_from_map(
+    map: &std::collections::BTreeMap<String, ProtocolValue>,
+) -> Option<DecodedOperationResponse> {
+    let op_code = match map.get(ids::KEY_OP_CODE)? {
+        ProtocolValue::Byte(v) => *v,
+        ProtocolValue::Short(v) => u8::try_from(*v).ok()?,
+        ProtocolValue::Int(v) => u8::try_from(*v).ok()?,
+        _ => return None,
+    };
+    let return_code = match map.get(ids::KEY_RETURN_CODE)? {
+        ProtocolValue::Short(v) => *v,
+        ProtocolValue::Int(v) => i16::try_from(*v).ok()?,
+        _ => return None,
+    };
+    let params = match map.get(ids::KEY_PARAMS)? {
+        ProtocolValue::Dictionary(v) | ProtocolValue::Hashtable(v) => v.clone(),
+        _ => return None,
+    };
+    Some(DecodedOperationResponse {
+        op_code,
+        return_code,
+        params,
+    })
+}
+
+fn map_text_fallback(message: &PhotonMessage, re: &Regex) -> Option<MarketTransaction> {
+    let text = std::str::from_utf8(&message.payload).ok()?;
+    let captures = re.captures(text)?;
+    let location = captures.name("location")?.as_str().to_string();
+    let item = captures.name("item")?.as_str().to_string();
+    let qty: u32 = captures.name("qty")?.as_str().parse().ok()?;
+    let price: u64 = captures.name("price")?.as_str().parse().ok()?;
+    MarketTransaction::new(location, item, qty, price, None).ok()
 }
 
 pub fn decode_transaction(packet: &[u8]) -> Option<MarketTransaction> {
@@ -45,7 +110,9 @@ pub fn decode_transaction(packet: &[u8]) -> Option<MarketTransaction> {
     extract_market_transactions(&messages).into_iter().next()
 }
 
-pub fn extract_udp_payload_ipv4(packet: &[u8]) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
+pub fn extract_udp_payload_ipv4(
+    packet: &[u8],
+) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
     if packet.len() < 14 {
         return None;
     }
