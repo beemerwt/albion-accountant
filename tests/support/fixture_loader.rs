@@ -26,12 +26,25 @@ pub fn load_json_fixture(name: &str) -> Value {
 
 pub fn protocol_value_to_json(value: &ProtocolValue) -> Value {
     match value {
-        ProtocolValue::Byte(v) => Value::from(*v),
+        ProtocolValue::UnsignedByte(v) | ProtocolValue::Byte(v) => Value::from(*v),
+        ProtocolValue::UnsignedShort(v) => Value::from(*v),
         ProtocolValue::Short(v) => Value::from(*v),
+        ProtocolValue::UnsignedInt(v) => Value::from(*v),
         ProtocolValue::Int(v) => Value::from(*v),
+        ProtocolValue::UnsignedLong(v) => Value::from(*v),
         ProtocolValue::Long(v) => Value::from(*v),
+        ProtocolValue::Float(v) => Value::from(*v),
+        ProtocolValue::Double(v) => Value::from(*v),
         ProtocolValue::String(v) => Value::from(v.clone()),
         ProtocolValue::Bool(v) => Value::from(*v),
+        ProtocolValue::ByteArray(v) => Value::Array(v.iter().map(|b| Value::from(*b)).collect()),
+        ProtocolValue::Custom(tag, wrapped) => {
+            let mut out = Map::new();
+            out.insert("custom_tag".to_string(), Value::from(*tag));
+            out.insert("value".to_string(), protocol_value_to_json(wrapped));
+            Value::Object(out)
+        }
+        ProtocolValue::Object(wrapped) => protocol_value_to_json(wrapped),
         ProtocolValue::Array(v) => Value::Array(v.iter().map(protocol_value_to_json).collect()),
         ProtocolValue::Dictionary(v) | ProtocolValue::Hashtable(v) => {
             let mut out = Map::new();

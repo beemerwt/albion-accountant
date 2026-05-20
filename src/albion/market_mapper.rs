@@ -64,9 +64,12 @@ fn read_u64_any(params: &BTreeMap<String, ProtocolValue>, keys: &[&str]) -> Opti
 
 fn as_u64(v: &ProtocolValue) -> Option<u64> {
     match v {
-        ProtocolValue::Byte(x) => Some(u64::from(*x)),
+        ProtocolValue::UnsignedByte(x) | ProtocolValue::Byte(x) => Some(u64::from(*x)),
+        ProtocolValue::UnsignedShort(x) => Some(u64::from(*x)),
         ProtocolValue::Short(x) => u64::try_from(*x).ok(),
+        ProtocolValue::UnsignedInt(x) => Some(u64::from(*x)),
         ProtocolValue::Int(x) => u64::try_from(*x).ok(),
+        ProtocolValue::UnsignedLong(x) => Some(*x),
         ProtocolValue::Long(x) => u64::try_from(*x).ok(),
         ProtocolValue::String(s) => s.parse::<u64>().ok(),
         _ => None,
