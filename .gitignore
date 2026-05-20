@@ -1,0 +1,4 @@
+/target
+service-account.json
+google-credentials.json
+.env
