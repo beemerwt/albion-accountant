@@ -12,8 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::{albion::transaction::MarketTransaction, config::Config};
 
 fn install_rustls_provider() {
-    let _ = rustls::crypto::ring::default_provider()
-        .install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 #[tokio::main]
