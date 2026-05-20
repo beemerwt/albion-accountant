@@ -5,14 +5,20 @@ mod sheets;
 
 use std::{collections::HashSet, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::{albion::transaction::MarketTransaction, config::Config};
 
+fn install_rustls_provider() {
+    let _ = rustls::crypto::ring::default_provider()
+        .install_default();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_rustls_provider();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -55,15 +61,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    config.validate_google_config()?;
+
     let sheets_client = sheets::client::SheetsClient::new(
-        config
-            .google_credentials
-            .clone()
-            .context("missing --google-credentials or ALBION_ACCOUNTANT_GOOGLE_CREDENTIALS")?,
-        config
-            .spreadsheet_id
-            .clone()
-            .context("missing --spreadsheet-id or ALBION_ACCOUNTANT_SPREADSHEET_ID")?,
+        config.google_client_secret.clone().expect("validated"),
+        config.google_token_cache.clone(),
+        config.spreadsheet_id.clone().expect("validated"),
         config.sheet_name.clone(),
     )
     .await?;

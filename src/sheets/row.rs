@@ -40,12 +40,33 @@ mod tests {
     use crate::albion::transaction::MarketTransaction;
 
     #[test]
-    fn row_conversion() {
+    fn row_conversion_has_expected_five_columns() {
         let tx = MarketTransaction::new("Martlock".into(), "T4_BAG".into(), 3, 1250, None).unwrap();
         let row = super::transaction_row(&tx);
         assert_eq!(
-            row.values.unwrap()[0][4],
-            serde_json::Value::String("3750".into())
+            row.values.unwrap()[0],
+            vec![
+                serde_json::Value::String("Martlock".into()),
+                serde_json::Value::String("T4_BAG".into()),
+                serde_json::Value::String("3".into()),
+                serde_json::Value::String("1250".into()),
+                serde_json::Value::String("3750".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn header_row_has_expected_five_columns() {
+        let row = super::header_row();
+        assert_eq!(
+            row.values.unwrap()[0],
+            vec![
+                serde_json::Value::String("Location".into()),
+                serde_json::Value::String("Item".into()),
+                serde_json::Value::String("Quantity".into()),
+                serde_json::Value::String("Per Item Cost".into()),
+                serde_json::Value::String("Total Cost".into()),
+            ]
         );
     }
 }
