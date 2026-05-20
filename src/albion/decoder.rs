@@ -1,5 +1,3 @@
-use regex::Regex;
-
 use super::{
     ids,
     market_mapper::{
@@ -27,16 +25,11 @@ pub fn decode_packet(packet: &[u8]) -> Vec<PhotonMessage> {
 }
 
 pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTransaction> {
-    let re = match Regex::new(
-        r#"location=(?P<location>[A-Za-z_]+);item=(?P<item>[A-Z0-9_@.]+);qty=(?P<qty>\d+);price=(?P<price>\d+)"#,
-    ) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-
+    // Compile-time guard: only protocol-decoded mappings are supported here;
+    // non-protocol text fallbacks are intentionally unsupported.
     messages
         .iter()
-        .filter_map(|m| map_message_to_transaction(m).or_else(|| map_text_fallback(m, &re)))
+        .filter_map(map_message_to_transaction)
         .collect()
 }
 
@@ -123,16 +116,6 @@ fn decoded_response_from_map(
     })
 }
 
-fn map_text_fallback(message: &PhotonMessage, re: &Regex) -> Option<MarketTransaction> {
-    let text = std::str::from_utf8(&message.payload).ok()?;
-    let captures = re.captures(text)?;
-    let location = captures.name("location")?.as_str().to_string();
-    let item = captures.name("item")?.as_str().to_string();
-    let qty: u32 = captures.name("qty")?.as_str().parse().ok()?;
-    let price: u64 = captures.name("price")?.as_str().parse().ok()?;
-    MarketTransaction::new(location, item, qty, price, None).ok()
-}
-
 pub fn decode_transaction(packet: &[u8]) -> Option<MarketTransaction> {
     let messages = decode_packet(packet);
     extract_market_transactions(&messages).into_iter().next()
@@ -196,22 +179,68 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn parses_sample_packet() {
-        let payload = b"location=Martlock;item=T4_BAG;qty=3;price=1250";
-        let mut packet = Vec::new();
-        let frame_len = 6 + payload.len();
-        packet.extend_from_slice(&(frame_len as u16).to_be_bytes());
-        packet.push(7);
-        packet.push(0);
-        packet.extend_from_slice(&1u16.to_be_bytes());
-        packet.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        packet.extend_from_slice(payload);
+    fn parses_protocol_framed_market_event_packet() {
+        let payload = build_event_payload("Martlock", "T4_BAG", 3, 1250);
+        let packet = build_framed_packet(payload);
 
         let tx = decode_transaction(&packet).unwrap();
         assert_eq!(tx.location, "Martlock");
         assert_eq!(tx.total_cost, 3750);
     }
 
+    fn build_framed_packet(payload: Vec<u8>) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(7);
+        body.push(0);
+        body.extend_from_slice(&1u16.to_be_bytes());
+        body.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        body.extend_from_slice(&payload);
+
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&body);
+        packet
+    }
+
+    fn build_event_payload(location: &str, item: &str, qty: i32, price: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        out.push(b'd');
+        out.extend_from_slice(&2u16.to_be_bytes());
+
+        write_string(&mut out, ids::KEY_EVENT_CODE);
+        out.push(b'b');
+        out.push(0x2a);
+
+        write_string(&mut out, ids::KEY_PARAMS);
+        out.push(b'd');
+        out.extend_from_slice(&4u16.to_be_bytes());
+
+        write_string_value(&mut out, "location", location);
+        write_string_value(&mut out, "item", item);
+        write_int_value(&mut out, "qty", qty);
+        write_int_value(&mut out, "price", price);
+
+        out
+    }
+
+    fn write_string_value(out: &mut Vec<u8>, key: &str, value: &str) {
+        write_string(out, key);
+        out.push(b't');
+        write_string(out, value);
+    }
+
+    fn write_int_value(out: &mut Vec<u8>, key: &str, value: i32) {
+        write_string(out, key);
+        out.push(b'i');
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn write_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+  
     fn market_params() -> BTreeMap<String, ProtocolValue> {
         BTreeMap::from([
             ("location".to_string(), ProtocolValue::String("Bridgewatch".to_string())),
