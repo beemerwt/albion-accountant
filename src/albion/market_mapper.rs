@@ -124,3 +124,34 @@ fn as_u64(v: &ProtocolValue) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_market_params() -> BTreeMap<String, ProtocolValue> {
+        BTreeMap::from([
+            ("location".to_string(), ProtocolValue::String("Martlock".to_string())),
+            ("item".to_string(), ProtocolValue::String("T4_BAG".to_string())),
+            ("qty".to_string(), ProtocolValue::Int(3)),
+            ("price".to_string(), ProtocolValue::Long(1250)),
+        ])
+    }
+
+    #[test]
+    fn maps_supported_event_code_to_market_transaction() {
+        let event = DecodedEvent {
+            code: 0x2a,
+            params: valid_market_params(),
+        };
+
+        let tx = map_event_to_transaction(&event);
+
+        assert!(tx.is_some());
+        let tx = tx.unwrap();
+        assert_eq!(tx.location, "Martlock");
+        assert_eq!(tx.item, "T4_BAG");
+        assert_eq!(tx.quantity, 3);
+        assert_eq!(tx.total_cost, 3750);
+    }
+}

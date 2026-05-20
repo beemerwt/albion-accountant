@@ -1,4 +1,4 @@
-pub const MARKET_EVENT_CODES: &[u8] = &[];
+pub const MARKET_EVENT_CODES: &[u8] = &[0x2a];
 pub const MARKET_OPERATION_CODES: &[u8] = &[0x4b, 0x4c];
 pub const SUCCESS_RETURN_CODES: &[i16] = &[0];
 
