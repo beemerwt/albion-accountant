@@ -1,0 +1,19 @@
+{
+  "scenario": "sell_history",
+  "opcode": 76,
+  "command_type": 3,
+  "transport": {
+    "src_ip": "10.10.1.26",
+    "src_port": 5056,
+    "dst_ip": "52.28.210.45",
+    "dst_port": 4535,
+    "proto": 17
+  },
+  "transaction": {
+    "location": "FortSterling",
+    "item": "T5_CAPE",
+    "quantity": 12,
+    "per_item_cost": 9050,
+    "total_cost": 108600
+  }
+}

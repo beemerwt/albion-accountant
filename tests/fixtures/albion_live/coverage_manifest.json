@@ -1,0 +1,19 @@
+{
+  "description": "Fixture coverage for sanitized Albion live market history flows",
+  "fixtures": [
+    {
+      "name": "buy_history",
+      "raw_frame": "buy_history_frame.hex",
+      "expected": "buy_history_expected.json",
+      "opcode": 75,
+      "notes": "OperationResponse opcode 0x4b with canonical numeric types (UnsignedInt/UnsignedLong)."
+    },
+    {
+      "name": "sell_history",
+      "raw_frame": "sell_history_frame.hex",
+      "expected": "sell_history_expected.json",
+      "opcode": 76,
+      "notes": "OperationResponse opcode 0x4c using alias keys and mixed coercion (UnsignedShort quantity + numeric string price)."
+    }
+  ]
+}
