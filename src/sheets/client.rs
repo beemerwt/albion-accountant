@@ -5,7 +5,7 @@ use google_sheets4::Sheets;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use tokio::time::sleep;
-use yup_oauth2::ServiceAccountAuthenticator;
+use yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
 use crate::{albion::transaction::MarketTransaction, sheets::row};
 
@@ -17,12 +17,17 @@ pub struct SheetsClient {
 
 impl SheetsClient {
     pub async fn new(
-        credentials: PathBuf,
+        client_secret_path: PathBuf,
+        token_cache_path: PathBuf,
         spreadsheet_id: String,
         sheet_name: String,
     ) -> Result<Self> {
-        let key = yup_oauth2::read_service_account_key(credentials).await?;
-        let auth = ServiceAccountAuthenticator::builder(key).build().await?;
+        let secret = yup_oauth2::read_application_secret(&client_secret_path).await?;
+        let auth =
+            InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
+                .persist_tokens_to_disk(token_cache_path)
+                .build()
+                .await?;
         let https = HttpsConnectorBuilder::new()
             .with_native_roots()?
             .https_or_http()

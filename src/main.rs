@@ -5,7 +5,7 @@ mod sheets;
 
 use std::{collections::HashSet, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -55,15 +55,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    config.validate_google_config()?;
+
     let sheets_client = sheets::client::SheetsClient::new(
-        config
-            .google_credentials
-            .clone()
-            .context("missing --google-credentials or ALBION_ACCOUNTANT_GOOGLE_CREDENTIALS")?,
-        config
-            .spreadsheet_id
-            .clone()
-            .context("missing --spreadsheet-id or ALBION_ACCOUNTANT_SPREADSHEET_ID")?,
+        config.google_client_secret.clone().expect("validated"),
+        config.google_token_cache.clone(),
+        config.spreadsheet_id.clone().expect("validated"),
         config.sheet_name.clone(),
     )
     .await?;
