@@ -3,7 +3,7 @@ mod capture;
 mod config;
 mod sheets;
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -40,8 +40,28 @@ async fn main() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<MarketTransaction>(256);
     let capture_tx = tx.clone();
     std::thread::spawn(move || {
+        let mut processor = albion::session::PacketProcessor::new(Duration::from_secs(90));
+        let mut packet_count = 0usize;
         if let Err(err) = capture::pcap_capture::capture_loop(&interface, move |packet| {
-            if let Some(txn) = albion::decoder::decode_transaction(packet) {
+            packet_count = packet_count.wrapping_add(1);
+            if packet_count % 512 == 0 {
+                processor.cleanup_stale_sessions();
+            }
+            let Some((udp_payload, src_ip, src_port, dst_ip, dst_port, protocol)) =
+                albion::decoder::extract_udp_payload_ipv4(packet)
+            else {
+                return;
+            };
+            let session_key = albion::session::SessionKey {
+                src_ip,
+                src_port,
+                dst_ip,
+                dst_port,
+                protocol,
+            };
+
+            let messages = processor.ingest_packet(session_key, udp_payload);
+            for txn in albion::decoder::extract_market_transactions(&messages) {
                 debug!(?txn, "decoded transaction event");
                 let _ = capture_tx.blocking_send(txn);
             }

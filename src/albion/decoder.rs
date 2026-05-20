@@ -45,6 +45,52 @@ pub fn decode_transaction(packet: &[u8]) -> Option<MarketTransaction> {
     extract_market_transactions(&messages).into_iter().next()
 }
 
+pub fn extract_udp_payload_ipv4(packet: &[u8]) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
+    if packet.len() < 14 {
+        return None;
+    }
+    let ether_type = u16::from_be_bytes([packet[12], packet[13]]);
+    if ether_type != 0x0800 {
+        return None;
+    }
+    let ip_start = 14usize;
+    if packet.len() < ip_start + 20 {
+        return None;
+    }
+    let ihl = (packet[ip_start] & 0x0f) as usize * 4;
+    if ihl < 20 || packet.len() < ip_start + ihl {
+        return None;
+    }
+    let proto = packet[ip_start + 9];
+    if proto != 17 {
+        return None;
+    }
+    let src_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+        packet[ip_start + 12],
+        packet[ip_start + 13],
+        packet[ip_start + 14],
+        packet[ip_start + 15],
+    ));
+    let dst_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+        packet[ip_start + 16],
+        packet[ip_start + 17],
+        packet[ip_start + 18],
+        packet[ip_start + 19],
+    ));
+    let udp_start = ip_start + ihl;
+    if packet.len() < udp_start + 8 {
+        return None;
+    }
+    let src_port = u16::from_be_bytes([packet[udp_start], packet[udp_start + 1]]);
+    let dst_port = u16::from_be_bytes([packet[udp_start + 2], packet[udp_start + 3]]);
+    let udp_len = u16::from_be_bytes([packet[udp_start + 4], packet[udp_start + 5]]) as usize;
+    if udp_len < 8 || packet.len() < udp_start + udp_len {
+        return None;
+    }
+    let payload = &packet[udp_start + 8..udp_start + udp_len];
+    Some((payload, src_ip, src_port, dst_ip, dst_port, proto))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
