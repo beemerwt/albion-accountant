@@ -53,22 +53,32 @@ pub struct PacketProcessor {
 
 impl PacketProcessor {
     pub fn new(session_ttl: Duration) -> Self {
-        Self { sessions: HashMap::new(), session_ttl }
+        Self {
+            sessions: HashMap::new(),
+            session_ttl,
+        }
     }
 
-    pub fn ingest_packet(&mut self, session_key: SessionKey, packet_bytes: &[u8]) -> Vec<PhotonMessage> {
+    pub fn ingest_packet(
+        &mut self,
+        session_key: SessionKey,
+        packet_bytes: &[u8],
+    ) -> Vec<PhotonMessage> {
         let now = Instant::now();
-        let state = self.sessions.entry(session_key.clone()).or_insert_with(|| SessionState {
-            channels: HashMap::new(),
-            fragment_buffer: Vec::new(),
-            peer: SessionMetadata {
-                src_ip: session_key.src_ip,
-                src_port: session_key.src_port,
-                dst_ip: session_key.dst_ip,
-                dst_port: session_key.dst_port,
-            },
-            last_seen: now,
-        });
+        let state = self
+            .sessions
+            .entry(session_key.clone())
+            .or_insert_with(|| SessionState {
+                channels: HashMap::new(),
+                fragment_buffer: Vec::new(),
+                peer: SessionMetadata {
+                    src_ip: session_key.src_ip,
+                    src_port: session_key.src_port,
+                    dst_ip: session_key.dst_ip,
+                    dst_port: session_key.dst_port,
+                },
+                last_seen: now,
+            });
         state.last_seen = now;
 
         if state.fragment_buffer.len() + packet_bytes.len() > MAX_FRAGMENT_BYTES {
@@ -124,7 +134,12 @@ impl PacketProcessor {
     }
 }
 
-fn flush_channel(session_key: &SessionKey, channel_id: u8, chan: &mut ChannelState, out: &mut Vec<PhotonMessage>) {
+fn flush_channel(
+    session_key: &SessionKey,
+    channel_id: u8,
+    chan: &mut ChannelState,
+    out: &mut Vec<PhotonMessage>,
+) {
     if chan.expected_seq.is_none() {
         if let Some((&seq, _)) = chan.pending.iter().next() {
             chan.expected_seq = Some(seq);
