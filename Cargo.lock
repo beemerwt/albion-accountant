@@ -21,7 +21,6 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "pcap",
- "regex",
  "rustls",
  "serde_json",
  "temp-env",
