@@ -1,5 +1,25 @@
 use super::error::{DecodeError, DecodeResult};
 
+pub const COMMAND_TYPE_OPERATION_RESPONSE: u8 = 3;
+pub const COMMAND_TYPE_EVENT: u8 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlbionCommandType {
+    Event,
+    OperationResponse,
+    Unsupported(u8),
+}
+
+impl From<u8> for AlbionCommandType {
+    fn from(value: u8) -> Self {
+        match value {
+            COMMAND_TYPE_EVENT => Self::Event,
+            COMMAND_TYPE_OPERATION_RESPONSE => Self::OperationResponse,
+            other => Self::Unsupported(other),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhotonMessage {
     pub command_type: u8,

@@ -5,8 +5,9 @@ use super::{
         map_response_to_transaction,
     },
     protocol::{
-        commands::{PhotonMessage, decode_command_envelope},
+        commands::{AlbionCommandType, PhotonMessage, decode_command_envelope},
         events::decode_event_payload,
+        operations::decode_operation_payload,
         protocol16::ProtocolValue,
         transport::parse_udp_payload,
     },
@@ -33,18 +34,45 @@ pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTran
 }
 
 fn map_message_to_transaction(message: &PhotonMessage) -> Option<MarketTransaction> {
-    let event_map = decode_event_payload(&message.payload).ok()?;
-    if let Some(event) = decoded_event_from_map(&event_map) {
-        if let Some(tx) = map_event_to_transaction(&event) {
-            return Some(tx);
+    match AlbionCommandType::from(message.command_type) {
+        AlbionCommandType::Event => {
+            let event_map = decode_event_payload(&message.payload).ok()?;
+            return map_decoded_payload_to_transaction(AlbionCommandType::Event, &event_map);
         }
-    }
-    if let Some(response) = decoded_response_from_map(&event_map) {
-        if let Some(tx) = map_response_to_transaction(&response) {
-            return Some(tx);
+        AlbionCommandType::OperationResponse => {
+            let response_map = decode_operation_payload(&message.payload).ok()?;
+            return map_decoded_payload_to_transaction(
+                AlbionCommandType::OperationResponse,
+                &response_map,
+            );
+        }
+        AlbionCommandType::Unsupported(command_type) => {
+            tracing::debug!(
+                command_type,
+                channel = message.channel,
+                seq = message.reliable_sequence,
+                "ignoring unsupported command type"
+            );
         }
     }
     None
+}
+
+fn map_decoded_payload_to_transaction(
+    command_type: AlbionCommandType,
+    map: &std::collections::BTreeMap<String, ProtocolValue>,
+) -> Option<MarketTransaction> {
+    match command_type {
+        AlbionCommandType::Event => {
+            let event = decoded_event_from_map(map)?;
+            map_event_to_transaction(&event)
+        }
+        AlbionCommandType::OperationResponse => {
+            let response = decoded_response_from_map(map)?;
+            map_response_to_transaction(&response)
+        }
+        AlbionCommandType::Unsupported(_) => None,
+    }
 }
 
 fn decoded_event_from_map(
@@ -144,6 +172,11 @@ pub fn extract_udp_payload_ipv4(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::albion::protocol::{
+        commands::AlbionCommandType,
+        protocol16::ProtocolValue,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn parses_protocol_framed_market_event_packet() {
@@ -206,5 +239,63 @@ mod tests {
     fn write_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u16).to_be_bytes());
         out.extend_from_slice(value.as_bytes());
+    }
+  
+    fn market_params() -> BTreeMap<String, ProtocolValue> {
+        BTreeMap::from([
+            ("location".to_string(), ProtocolValue::String("Bridgewatch".to_string())),
+            ("item".to_string(), ProtocolValue::String("T5_BAG".to_string())),
+            ("qty".to_string(), ProtocolValue::Int(2)),
+            ("price".to_string(), ProtocolValue::Long(1000)),
+        ])
+    }
+
+    #[test]
+    fn dispatches_event_payload_by_command_type() {
+        let payload_map = BTreeMap::from([
+            (ids::KEY_EVENT_CODE.to_string(), ProtocolValue::Byte(0x2a)),
+            (
+                ids::KEY_PARAMS.to_string(),
+                ProtocolValue::Dictionary(market_params()),
+            ),
+        ]);
+        let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map).unwrap();
+        assert_eq!(tx.location, "Bridgewatch");
+        assert_eq!(tx.total_cost, 2000);
+    }
+
+    #[test]
+    fn dispatches_operation_response_payload_by_command_type() {
+        let payload_map = BTreeMap::from([
+            (
+                ids::KEY_OP_CODE.to_string(),
+                ProtocolValue::Byte(0x5a),
+            ),
+            (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
+            (
+                ids::KEY_PARAMS.to_string(),
+                ProtocolValue::Dictionary(market_params()),
+            ),
+        ]);
+        let tx = map_decoded_payload_to_transaction(
+            AlbionCommandType::OperationResponse,
+            &payload_map,
+        )
+        .unwrap();
+        assert_eq!(tx.location, "Bridgewatch");
+        assert_eq!(tx.total_cost, 2000);
+    }
+
+    #[test]
+    fn ignores_unsupported_command_type() {
+        let message = PhotonMessage {
+            command_type: 255,
+            channel: 2,
+            reliable_sequence: 10,
+            payload_length: 0,
+            payload: Vec::new(),
+        };
+
+        assert!(map_message_to_transaction(&message).is_none());
     }
 }
