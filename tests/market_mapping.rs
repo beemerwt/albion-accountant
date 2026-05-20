@@ -8,6 +8,12 @@ use albion_accountant::albion::{
 };
 use serde_json::json;
 use support::fixture_loader::{assert_json_golden_eq, load_hex_fixture, protocol_value_to_json};
+use std::collections::BTreeMap;
+use albion_accountant::albion::{
+    ids,
+    market_mapper::{map_response_to_transaction, DecodedOperationResponse},
+    protocol::protocol16::ProtocolValue,
+};
 
 #[test]
 fn maps_market_packet_to_transaction_and_matches_golden() {
@@ -49,4 +55,26 @@ fn unsupported_opcode_is_ignored_deterministically() {
 
     let txs = extract_market_transactions(&messages);
     assert!(txs.is_empty(), "unsupported opcode must not map to market transactions");
+}
+
+#[test]
+fn mapping_table_supported_opcodes_require_expected_fields() {
+    for op_code in ids::MARKET_OPERATION_CODES {
+        let response = DecodedOperationResponse {
+            op_code: *op_code,
+            return_code: 0,
+            params: BTreeMap::from([
+                ("LocationId".to_string(), ProtocolValue::String("Martlock".to_string())),
+                ("ItemTypeId".to_string(), ProtocolValue::String("T4_BAG".to_string())),
+                ("Amount".to_string(), ProtocolValue::UnsignedInt(3)),
+                ("UnitPriceSilver".to_string(), ProtocolValue::UnsignedLong(1200)),
+            ]),
+        };
+        let tx = map_response_to_transaction(&response)
+            .unwrap_or_else(|| panic!("opcode {op_code:#x} should map with canonical fields"));
+        assert_eq!(tx.location, "Martlock");
+        assert_eq!(tx.item, "T4_BAG");
+        assert_eq!(tx.quantity, 3);
+        assert_eq!(tx.per_item_cost, 1200);
+    }
 }
