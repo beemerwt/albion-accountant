@@ -19,6 +19,8 @@ struct Args {
     pub all_interfaces: bool,
     #[arg(long)]
     pub list_interfaces: bool,
+    #[arg(long)]
+    pub pcap_file: Option<PathBuf>,
     #[arg(long, env = "ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET")]
     pub google_client_secret: Option<PathBuf>,
     #[arg(
@@ -54,6 +56,7 @@ pub struct Config {
     pub interfaces: Vec<String>,
     pub all_interfaces: bool,
     pub list_interfaces: bool,
+    pub pcap_file: Option<PathBuf>,
     pub google_client_secret: Option<PathBuf>,
     pub google_token_cache: PathBuf,
     pub spreadsheet_id: Option<String>,
@@ -82,6 +85,7 @@ impl Config {
             },
             all_interfaces: args.all_interfaces,
             list_interfaces: args.list_interfaces,
+            pcap_file: args.pcap_file,
             google_client_secret: args.google_client_secret,
             google_token_cache: args.google_token_cache,
             spreadsheet_id: args.spreadsheet_id,
@@ -160,6 +164,7 @@ mod tests {
             interfaces: vec![],
             all_interfaces: false,
             list_interfaces: false,
+            pcap_file: None,
             google_client_secret: None,
             google_token_cache: ".albion-accountant-token.json".into(),
             spreadsheet_id: None,
@@ -183,6 +188,7 @@ mod tests {
             interfaces: vec![],
             all_interfaces: false,
             list_interfaces: false,
+            pcap_file: None,
             google_client_secret: None,
             google_token_cache: ".albion-accountant-token.json".into(),
             spreadsheet_id: None,
