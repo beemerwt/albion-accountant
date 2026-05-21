@@ -1,4 +1,9 @@
+use std::path::Path;
+
 use anyhow::{Context, Result};
+use tracing::{info, warn};
+
+use crate::{albion::hosts, config::FilterMode};
 
 pub fn list_interfaces() -> Result<Vec<String>> {
     Ok(pcap::Device::list()?
@@ -28,22 +33,69 @@ pub fn pick_interface(configured: Vec<String>) -> Result<String> {
     Ok(best.name.clone())
 }
 
-pub fn open_capture_handle(interface: &str) -> Result<pcap::Capture<pcap::Active>> {
+pub fn build_filter_expression(
+    mode: FilterMode,
+    bpf_override: Option<&str>,
+    albion_hosts_file: Option<&Path>,
+    albion_port_expr: Option<&str>,
+) -> String {
+    if let Some(expr) = bpf_override {
+        return expr.to_string();
+    }
+
+    match mode {
+        FilterMode::Broad => "udp".to_string(),
+        FilterMode::Custom => {
+            warn!("custom filter mode selected without --bpf; falling back to broad udp filter");
+            "udp".to_string()
+        }
+        FilterMode::Albion => {
+            let hosts = match hosts::load_hosts(albion_hosts_file) {
+                Ok(hosts) if !hosts.is_empty() => hosts,
+                Ok(_) => {
+                    warn!("Albion hosts list is empty; falling back to broad udp filter");
+                    return "udp".to_string();
+                }
+                Err(err) => {
+                    warn!(error = %err, "Albion hosts list unavailable; falling back to broad udp filter");
+                    return "udp".to_string();
+                }
+            };
+            let hosts_expr = hosts
+                .into_iter()
+                .map(|host| format!("host {host}"))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            let port_expr = albion_port_expr.unwrap_or("port 5056 or port 5057");
+            format!("({hosts_expr}) and ({port_expr})")
+        }
+    }
+}
+
+pub fn open_capture_handle(
+    interface: &str,
+    filter_expr: &str,
+) -> Result<pcap::Capture<pcap::Active>> {
     let mut cap = pcap::Capture::from_device(interface)
         .with_context(|| format!("interface {interface} not found"))?
         .promisc(true)
         .immediate_mode(true)
         .open()?;
-    cap.filter("udp", true)?;
+    cap.filter(filter_expr, true)?;
+    info!(interface = %interface, filter = %filter_expr, "pcap filter applied");
     Ok(cap)
 }
 
-pub fn spawn_capture_thread<F>(interface: String, mut on_packet: F) -> std::thread::JoinHandle<()>
+pub fn spawn_capture_thread<F>(
+    interface: String,
+    filter_expr: String,
+    mut on_packet: F,
+) -> std::thread::JoinHandle<()>
 where
     F: FnMut(&str, &[u8]) + Send + 'static,
 {
     std::thread::spawn(move || {
-        let mut cap = match open_capture_handle(&interface) {
+        let mut cap = match open_capture_handle(&interface, &filter_expr) {
             Ok(cap) => cap,
             Err(_) => return,
         };

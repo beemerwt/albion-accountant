@@ -80,7 +80,13 @@ async fn main() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<MarketTransaction>(256);
     let mut active_interfaces = 0usize;
     for interface in interfaces {
-        match capture::pcap_capture::open_capture_handle(&interface) {
+        let filter_expr = capture::pcap_capture::build_filter_expression(
+            config.filter_mode,
+            config.bpf.as_deref(),
+            config.albion_hosts_file.as_deref(),
+            config.albion_port_expr.as_deref(),
+        );
+        match capture::pcap_capture::open_capture_handle(&interface, &filter_expr) {
             Ok(mut cap) => {
                 active_interfaces = active_interfaces.wrapping_add(1);
                 let capture_tx = tx.clone();

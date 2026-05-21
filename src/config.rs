@@ -1,7 +1,14 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum FilterMode {
+    Broad,
+    Albion,
+    Custom,
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -26,6 +33,14 @@ struct Args {
     pub sheet_name: String,
     #[arg(long)]
     pub dry_run: bool,
+    #[arg(long)]
+    pub bpf: Option<String>,
+    #[arg(long, value_enum, default_value_t = FilterMode::Broad)]
+    pub filter_mode: FilterMode,
+    #[arg(long)]
+    pub albion_hosts_file: Option<PathBuf>,
+    #[arg(long)]
+    pub albion_port_expr: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +53,10 @@ pub struct Config {
     pub spreadsheet_id: Option<String>,
     pub sheet_name: String,
     pub dry_run: bool,
+    pub bpf: Option<String>,
+    pub filter_mode: FilterMode,
+    pub albion_hosts_file: Option<PathBuf>,
+    pub albion_port_expr: Option<String>,
 }
 
 impl Config {
@@ -59,6 +78,10 @@ impl Config {
             spreadsheet_id: args.spreadsheet_id,
             sheet_name: args.sheet_name,
             dry_run: args.dry_run,
+            bpf: args.bpf,
+            filter_mode: args.filter_mode,
+            albion_hosts_file: args.albion_hosts_file,
+            albion_port_expr: args.albion_port_expr,
         })
     }
 
@@ -82,7 +105,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Args, Config};
+    use super::{Args, Config, FilterMode};
 
     #[test]
     fn cli_overrides_env_interface() {
@@ -114,6 +137,12 @@ mod tests {
     }
 
     #[test]
+    fn filter_mode_defaults_to_broad() {
+        let args = Args::parse_from(["x"]);
+        assert_eq!(args.filter_mode, FilterMode::Broad);
+    }
+
+    #[test]
     fn dry_run_does_not_require_google_config() {
         let config = Config {
             interfaces: vec![],
@@ -124,6 +153,10 @@ mod tests {
             spreadsheet_id: None,
             sheet_name: "Sheet1".to_string(),
             dry_run: true,
+            bpf: None,
+            filter_mode: FilterMode::Broad,
+            albion_hosts_file: None,
+            albion_port_expr: None,
         };
 
         assert!(config.validate_google_config().is_ok());
@@ -140,6 +173,10 @@ mod tests {
             spreadsheet_id: None,
             sheet_name: "Sheet1".to_string(),
             dry_run: false,
+            bpf: None,
+            filter_mode: FilterMode::Broad,
+            albion_hosts_file: None,
+            albion_port_expr: None,
         };
 
         assert!(config.validate_google_config().is_err());
