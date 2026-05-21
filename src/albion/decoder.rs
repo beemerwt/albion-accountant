@@ -165,32 +165,76 @@ pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
     }
 }
 
-pub fn extract_udp_payload_ipv4(
-    packet: &[u8],
-) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
-    if packet.len() < 14 {
-        tracing::debug!(drop_reason = "malformed_eth", packet_len = packet.len(), "packet rejected");
-        return None;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapturePacket<'a> {
+    pub link_type: i32,
+    pub packet: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpTuple<'a> {
+    pub payload: &'a [u8],
+    pub src_ip: std::net::IpAddr,
+    pub src_port: u16,
+    pub dst_ip: std::net::IpAddr,
+    pub dst_port: u16,
+    pub protocol: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpExtractDropReason {
+    UnsupportedLinkType,
+    TruncatedL2,
+    UnsupportedEtherType,
+    TruncatedIpv4,
+    TruncatedIpv6,
+    NonUdp,
+    TruncatedUdp,
+}
+
+pub type UdpExtractResult<'a> = Result<UdpTuple<'a>, UdpExtractDropReason>;
+
+pub fn extract_udp_payload(packet: CapturePacket<'_>) -> UdpExtractResult<'_> {
+    let (l3_start, ether_type) = match packet.link_type {
+        1 => {
+            if packet.packet.len() < 14 {
+                return Err(UdpExtractDropReason::TruncatedL2);
+            }
+            (
+                14usize,
+                u16::from_be_bytes([packet.packet[12], packet.packet[13]]),
+            )
+        }
+        113 => {
+            if packet.packet.len() < 16 {
+                return Err(UdpExtractDropReason::TruncatedL2);
+            }
+            (
+                16usize,
+                u16::from_be_bytes([packet.packet[14], packet.packet[15]]),
+            )
+        }
+        _ => return Err(UdpExtractDropReason::UnsupportedLinkType),
+    };
+
+    match ether_type {
+        0x0800 => extract_udp_ipv4(packet.packet, l3_start),
+        0x86DD => extract_udp_ipv6(packet.packet, l3_start),
+        _ => Err(UdpExtractDropReason::UnsupportedEtherType),
     }
-    let ether_type = u16::from_be_bytes([packet[12], packet[13]]);
-    if ether_type != 0x0800 {
-        tracing::debug!(drop_reason = "non_ipv4", packet_len = packet.len(), ether_type, "packet rejected");
-        return None;
-    }
-    let ip_start = 14usize;
+}
+
+fn extract_udp_ipv4(packet: &[u8], ip_start: usize) -> UdpExtractResult<'_> {
     if packet.len() < ip_start + 20 {
-        tracing::debug!(drop_reason = "malformed_ipv4", packet_len = packet.len(), ether_type, "packet rejected");
-        return None;
+        return Err(UdpExtractDropReason::TruncatedIpv4);
     }
     let ihl = (packet[ip_start] & 0x0f) as usize * 4;
     if ihl < 20 || packet.len() < ip_start + ihl {
-        tracing::debug!(drop_reason = "malformed_ipv4", packet_len = packet.len(), ether_type, ihl, "packet rejected");
-        return None;
+        return Err(UdpExtractDropReason::TruncatedIpv4);
     }
     let proto = packet[ip_start + 9];
     if proto != 17 {
-        tracing::debug!(drop_reason = "non_udp", packet_len = packet.len(), ether_type, proto, "packet rejected");
-        return None;
+        return Err(UdpExtractDropReason::NonUdp);
     }
     let src_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
         packet[ip_start + 12],
@@ -204,20 +248,50 @@ pub fn extract_udp_payload_ipv4(
         packet[ip_start + 18],
         packet[ip_start + 19],
     ));
-    let udp_start = ip_start + ihl;
+    extract_udp_common(packet, ip_start + ihl, src_ip, dst_ip, proto)
+}
+
+fn extract_udp_ipv6(packet: &[u8], ip_start: usize) -> UdpExtractResult<'_> {
+    if packet.len() < ip_start + 40 {
+        return Err(UdpExtractDropReason::TruncatedIpv6);
+    }
+    let next_header = packet[ip_start + 6];
+    if next_header != 17 {
+        return Err(UdpExtractDropReason::NonUdp);
+    }
+    let src_ip = std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+        <[u8; 16]>::try_from(&packet[ip_start + 8..ip_start + 24]).expect("checked len"),
+    ));
+    let dst_ip = std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+        <[u8; 16]>::try_from(&packet[ip_start + 24..ip_start + 40]).expect("checked len"),
+    ));
+    extract_udp_common(packet, ip_start + 40, src_ip, dst_ip, next_header)
+}
+
+fn extract_udp_common(
+    packet: &[u8],
+    udp_start: usize,
+    src_ip: std::net::IpAddr,
+    dst_ip: std::net::IpAddr,
+    protocol: u8,
+) -> UdpExtractResult<'_> {
     if packet.len() < udp_start + 8 {
-        tracing::debug!(drop_reason = "malformed_udp", packet_len = packet.len(), proto, "packet rejected");
-        return None;
+        return Err(UdpExtractDropReason::TruncatedUdp);
     }
     let src_port = u16::from_be_bytes([packet[udp_start], packet[udp_start + 1]]);
     let dst_port = u16::from_be_bytes([packet[udp_start + 2], packet[udp_start + 3]]);
     let udp_len = u16::from_be_bytes([packet[udp_start + 4], packet[udp_start + 5]]) as usize;
     if udp_len < 8 || packet.len() < udp_start + udp_len {
-        tracing::debug!(drop_reason = "malformed_udp", packet_len = packet.len(), proto, udp_len, "packet rejected");
-        return None;
+        return Err(UdpExtractDropReason::TruncatedUdp);
     }
-    let payload = &packet[udp_start + 8..udp_start + udp_len];
-    Some((payload, src_ip, src_port, dst_ip, dst_port, proto))
+    Ok(UdpTuple {
+        payload: &packet[udp_start + 8..udp_start + udp_len],
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        protocol,
+    })
 }
 
 #[cfg(test)]
@@ -275,7 +349,9 @@ mod tests {
 
         write_string(&mut out, ids::KEY_EVENT_CODE);
         out.push(b'b');
-        out.extend_from_slice(&(crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as u16).to_be_bytes());
+        out.extend_from_slice(
+            &(crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as u16).to_be_bytes(),
+        );
 
         write_string(&mut out, ids::KEY_PARAMS);
         out.push(b'd');
@@ -326,7 +402,9 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_EVENT_CODE.to_string(),
-                ProtocolValue::Short(crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as i16),
+                ProtocolValue::Short(
+                    crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as i16,
+                ),
             ),
             (
                 ids::KEY_PARAMS.to_string(),
@@ -351,7 +429,9 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_OP_CODE.to_string(),
-                ProtocolValue::Short(crate::albion::operation_codes::OperationCodes::AuctionGetOffers as i16),
+                ProtocolValue::Short(
+                    crate::albion::operation_codes::OperationCodes::AuctionGetOffers as i16,
+                ),
             ),
             (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
             (
@@ -419,7 +499,9 @@ mod tests {
     fn returns_none_for_event_missing_params_key() {
         let payload_map = BTreeMap::from([(
             ids::KEY_EVENT_CODE.to_string(),
-            ProtocolValue::Short(crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as i16),
+            ProtocolValue::Short(
+                crate::albion::event_codes::EventCodes::MarketPlaceBuildingInfo as i16,
+            ),
         )]);
 
         let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
@@ -437,7 +519,9 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_OP_CODE.to_string(),
-                ProtocolValue::Short(crate::albion::operation_codes::OperationCodes::AuctionGetOffers as i16),
+                ProtocolValue::Short(
+                    crate::albion::operation_codes::OperationCodes::AuctionGetOffers as i16,
+                ),
             ),
             (
                 ids::KEY_PARAMS.to_string(),
@@ -467,5 +551,118 @@ mod tests {
         };
 
         assert!(map_message_to_transaction(&message).is_none());
+    }
+    #[test]
+    fn extracts_valid_ipv4_udp_frame() {
+        let frame = build_eth_ipv4_udp_frame(&[1, 2, 3, 4]);
+        let parsed = extract_udp_payload(CapturePacket {
+            link_type: 1,
+            packet: &frame,
+        })
+        .expect("valid");
+        assert_eq!(parsed.src_port, 1000);
+        assert_eq!(parsed.dst_port, 2000);
+        assert_eq!(parsed.payload, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn extracts_valid_ipv6_udp_frame() {
+        let frame = build_eth_ipv6_udp_frame(&[9, 8, 7]);
+        let parsed = extract_udp_payload(CapturePacket {
+            link_type: 1,
+            packet: &frame,
+        })
+        .expect("valid");
+        assert_eq!(parsed.protocol, 17);
+        assert_eq!(parsed.payload, &[9, 8, 7]);
+        assert!(matches!(parsed.src_ip, std::net::IpAddr::V6(_)));
+    }
+
+    #[test]
+    fn rejects_unsupported_link_type() {
+        let frame = build_eth_ipv4_udp_frame(&[1]);
+        let err = extract_udp_payload(CapturePacket {
+            link_type: 999,
+            packet: &frame,
+        })
+        .unwrap_err();
+        assert_eq!(err, UdpExtractDropReason::UnsupportedLinkType);
+    }
+
+    #[test]
+    fn rejects_truncated_headers() {
+        assert_eq!(
+            extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet: &[0; 10]
+            })
+            .unwrap_err(),
+            UdpExtractDropReason::TruncatedL2
+        );
+        let mut ipv4 = build_eth_ipv4_udp_frame(&[1, 2]);
+        ipv4.truncate(30);
+        assert_eq!(
+            extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet: &ipv4
+            })
+            .unwrap_err(),
+            UdpExtractDropReason::TruncatedIpv4
+        );
+        let mut ipv6 = build_eth_ipv6_udp_frame(&[1, 2]);
+        ipv6.truncate(40);
+        assert_eq!(
+            extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet: &ipv6
+            })
+            .unwrap_err(),
+            UdpExtractDropReason::TruncatedIpv6
+        );
+        let mut udp = build_eth_ipv4_udp_frame(&[1, 2]);
+        udp.truncate(14 + 20 + 6);
+        assert_eq!(
+            extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet: &udp
+            })
+            .unwrap_err(),
+            UdpExtractDropReason::TruncatedUdp
+        );
+    }
+
+    fn build_eth_ipv4_udp_frame(payload: &[u8]) -> Vec<u8> {
+        let mut pkt = vec![0u8; 14];
+        pkt[12] = 0x08;
+        pkt[13] = 0x00;
+        pkt.extend_from_slice(&[
+            0x45, 0x00, 0x00, 0x00, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+        ]);
+        let udp_len = (8 + payload.len()) as u16;
+        pkt.extend_from_slice(&1000u16.to_be_bytes());
+        pkt.extend_from_slice(&2000u16.to_be_bytes());
+        pkt.extend_from_slice(&udp_len.to_be_bytes());
+        pkt.extend_from_slice(&0u16.to_be_bytes());
+        pkt.extend_from_slice(payload);
+        pkt
+    }
+
+    fn build_eth_ipv6_udp_frame(payload: &[u8]) -> Vec<u8> {
+        let mut pkt = vec![0u8; 14];
+        pkt[12] = 0x86;
+        pkt[13] = 0xDD;
+        let udp_len = (8 + payload.len()) as u16;
+        pkt.extend_from_slice(&[0x60, 0, 0, 0]);
+        pkt.extend_from_slice(&udp_len.to_be_bytes());
+        pkt.push(17);
+        pkt.push(64);
+        pkt.extend_from_slice(&[0u8; 16]);
+        pkt.extend_from_slice(&[1u8; 16]);
+        pkt.extend_from_slice(&1000u16.to_be_bytes());
+        pkt.extend_from_slice(&2000u16.to_be_bytes());
+        pkt.extend_from_slice(&udp_len.to_be_bytes());
+        pkt.extend_from_slice(&0u16.to_be_bytes());
+        pkt.extend_from_slice(payload);
+        pkt
     }
 }
