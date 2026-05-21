@@ -138,7 +138,13 @@ impl PacketProcessor {
 
         let frames = match parse_udp_payload_incremental(&merged) {
             Ok(frames) => frames,
-            Err(FrameParseError::Incomplete { .. }) => {
+            Err(FrameParseError::Incomplete { offset, needed, remaining, state: parser_state }) => {
+                let preview = merged.iter().take(32).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
+                outcome.failures.push(DecodeFailureArtifact {
+                    stage: "transport_incomplete",
+                    error: format!("state={parser_state} offset={offset} needed={needed} remaining={remaining} preview={preview} len={}", merged.len()),
+                    payload: merged.clone(),
+                });
                 state.fragment_buffer = merged;
                 state.last_seen = now;
                 outcome.summary.fragment_buffered_packets =
