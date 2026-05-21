@@ -181,10 +181,7 @@ pub fn extract_udp_payload_ipv4(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::albion::protocol::{
-        commands::AlbionCommandType,
-        protocol16::ProtocolValue,
-    };
+    use crate::albion::protocol::{commands::AlbionCommandType, protocol16::ProtocolValue};
     use std::collections::BTreeMap;
 
     #[test]
@@ -192,7 +189,15 @@ mod tests {
         let payload = build_event_payload("Martlock", "T4_BAG", 3, 1250);
         let packet = build_framed_packet(payload);
 
-        let tx = decode_transaction(&packet).unwrap();
+        let tx_opt = decode_transaction(&packet);
+        assert!(
+            tx_opt.is_some(),
+            "expected decoded transaction for framed event packet (command_type={:?}, event_code={}, payload_keys={:?})",
+            AlbionCommandType::Event,
+            0x2a_u8,
+            [ids::KEY_EVENT_CODE, ids::KEY_PARAMS]
+        );
+        let tx = tx_opt.expect("checked is_some above");
         assert_eq!(tx.location, "Martlock");
         assert_eq!(tx.total_cost, 3750);
     }
@@ -249,11 +254,17 @@ mod tests {
         out.extend_from_slice(&(value.len() as u16).to_be_bytes());
         out.extend_from_slice(value.as_bytes());
     }
-  
+
     fn market_params() -> BTreeMap<String, ProtocolValue> {
         BTreeMap::from([
-            ("location".to_string(), ProtocolValue::String("Bridgewatch".to_string())),
-            ("item".to_string(), ProtocolValue::String("T5_BAG".to_string())),
+            (
+                "location".to_string(),
+                ProtocolValue::String("Bridgewatch".to_string()),
+            ),
+            (
+                "item".to_string(),
+                ProtocolValue::String("T5_BAG".to_string()),
+            ),
             ("qty".to_string(), ProtocolValue::Int(2)),
             ("price".to_string(), ProtocolValue::Long(1000)),
         ])
@@ -268,7 +279,15 @@ mod tests {
                 ProtocolValue::Dictionary(market_params()),
             ),
         ]);
-        let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map).unwrap();
+        let tx_opt = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
+        assert!(
+            tx_opt.is_some(),
+            "expected event dispatch to decode (command_type={:?}, event_code={}, payload_keys={:?})",
+            AlbionCommandType::Event,
+            0x2a_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
+        let tx = tx_opt.expect("checked is_some above");
         assert_eq!(tx.location, "Bridgewatch");
         assert_eq!(tx.total_cost, 2000);
     }
@@ -276,23 +295,103 @@ mod tests {
     #[test]
     fn dispatches_operation_response_payload_by_command_type() {
         let payload_map = BTreeMap::from([
-            (
-                ids::KEY_OP_CODE.to_string(),
-                ProtocolValue::Byte(0x5a),
-            ),
+            (ids::KEY_OP_CODE.to_string(), ProtocolValue::Byte(0x5a)),
             (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
             (
                 ids::KEY_PARAMS.to_string(),
                 ProtocolValue::Dictionary(market_params()),
             ),
         ]);
-        let tx = map_decoded_payload_to_transaction(
+        let tx_opt =
+            map_decoded_payload_to_transaction(AlbionCommandType::OperationResponse, &payload_map);
+        assert!(
+            tx_opt.is_some(),
+            "expected operation response dispatch to decode (command_type={:?}, op_code={}, payload_keys={:?})",
             AlbionCommandType::OperationResponse,
-            &payload_map,
-        )
-        .unwrap();
+            0x5a_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
+        let tx = tx_opt.expect("checked is_some above");
         assert_eq!(tx.location, "Bridgewatch");
         assert_eq!(tx.total_cost, 2000);
+    }
+
+    #[test]
+    fn returns_none_for_unsupported_event_code() {
+        let payload_map = BTreeMap::from([
+            (ids::KEY_EVENT_CODE.to_string(), ProtocolValue::Byte(0x01)),
+            (
+                ids::KEY_PARAMS.to_string(),
+                ProtocolValue::Dictionary(market_params()),
+            ),
+        ]);
+
+        let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
+        assert!(
+            tx.is_none(),
+            "expected None for unsupported event code (command_type={:?}, event_code={}, payload_keys={:?})",
+            AlbionCommandType::Event,
+            0x01_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn returns_none_for_unsupported_operation_code() {
+        let payload_map = BTreeMap::from([
+            (ids::KEY_OP_CODE.to_string(), ProtocolValue::Byte(0x01)),
+            (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
+            (
+                ids::KEY_PARAMS.to_string(),
+                ProtocolValue::Dictionary(market_params()),
+            ),
+        ]);
+
+        let tx =
+            map_decoded_payload_to_transaction(AlbionCommandType::OperationResponse, &payload_map);
+        assert!(
+            tx.is_none(),
+            "expected None for unsupported operation code (command_type={:?}, op_code={}, payload_keys={:?})",
+            AlbionCommandType::OperationResponse,
+            0x01_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn returns_none_for_event_missing_params_key() {
+        let payload_map =
+            BTreeMap::from([(ids::KEY_EVENT_CODE.to_string(), ProtocolValue::Byte(0x2a))]);
+
+        let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
+        assert!(
+            tx.is_none(),
+            "expected None for missing event params key (command_type={:?}, event_code={}, payload_keys={:?})",
+            AlbionCommandType::Event,
+            0x2a_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn returns_none_for_operation_missing_return_code_key() {
+        let payload_map = BTreeMap::from([
+            (ids::KEY_OP_CODE.to_string(), ProtocolValue::Byte(0x5a)),
+            (
+                ids::KEY_PARAMS.to_string(),
+                ProtocolValue::Dictionary(market_params()),
+            ),
+        ]);
+
+        let tx =
+            map_decoded_payload_to_transaction(AlbionCommandType::OperationResponse, &payload_map);
+        assert!(
+            tx.is_none(),
+            "expected None for missing operation return code key (command_type={:?}, op_code={}, payload_keys={:?})",
+            AlbionCommandType::OperationResponse,
+            0x5a_u8,
+            payload_map.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
