@@ -1,0 +1,32 @@
+{
+  "fixtures": [
+    {
+      "name": "operation_offers_live",
+      "source_flow": "offers",
+      "kind": "operation",
+      "code": 75,
+      "fixture": "albion_live/buy_history_frame.hex"
+    },
+    {
+      "name": "operation_requests_live",
+      "source_flow": "requests",
+      "kind": "operation",
+      "code": 76,
+      "fixture": "albion_live/sell_history_frame.hex"
+    },
+    {
+      "name": "event_marketplace_building_info_builder",
+      "source_flow": "history",
+      "kind": "event",
+      "code": 58,
+      "fixture": "event_payload_58.json"
+    },
+    {
+      "name": "event_marketplace_notification_builder",
+      "source_flow": "notification",
+      "kind": "event",
+      "code": 183,
+      "fixture": "event_payload_183.json"
+    }
+  ]
+}

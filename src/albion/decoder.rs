@@ -194,7 +194,7 @@ mod tests {
             tx_opt.is_some(),
             "expected decoded transaction for framed event packet (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            58_u8,
+            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
             [ids::KEY_EVENT_CODE, ids::KEY_PARAMS]
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -224,7 +224,7 @@ mod tests {
 
         write_string(&mut out, ids::KEY_EVENT_CODE);
         out.push(b'b');
-        out.push(58);
+        out.push(ids::EventCodes::MARKETPLACE_BUILDING_INFO);
 
         write_string(&mut out, ids::KEY_PARAMS);
         out.push(b'd');
@@ -273,7 +273,10 @@ mod tests {
     #[test]
     fn dispatches_event_payload_by_command_type() {
         let payload_map = BTreeMap::from([
-            (ids::KEY_EVENT_CODE.to_string(), ProtocolValue::Byte(58)),
+            (
+                ids::KEY_EVENT_CODE.to_string(),
+                ProtocolValue::Byte(ids::EventCodes::MARKETPLACE_BUILDING_INFO),
+            ),
             (
                 ids::KEY_PARAMS.to_string(),
                 ProtocolValue::Dictionary(market_params()),
@@ -284,7 +287,7 @@ mod tests {
             tx_opt.is_some(),
             "expected event dispatch to decode (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            58_u8,
+            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
             payload_map.keys().collect::<Vec<_>>()
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -295,7 +298,10 @@ mod tests {
     #[test]
     fn dispatches_operation_response_payload_by_command_type() {
         let payload_map = BTreeMap::from([
-            (ids::KEY_OP_CODE.to_string(), ProtocolValue::Byte(81)),
+            (
+                ids::KEY_OP_CODE.to_string(),
+                ProtocolValue::Byte(ids::OperationCodes::AUCTION_GET_OFFERS as u8),
+            ),
             (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
             (
                 ids::KEY_PARAMS.to_string(),
@@ -308,7 +314,7 @@ mod tests {
             tx_opt.is_some(),
             "expected operation response dispatch to decode (command_type={:?}, op_code={}, payload_keys={:?})",
             AlbionCommandType::OperationResponse,
-            81_u8,
+            ids::OperationCodes::AUCTION_GET_OFFERS as u8,
             payload_map.keys().collect::<Vec<_>>()
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -360,15 +366,17 @@ mod tests {
 
     #[test]
     fn returns_none_for_event_missing_params_key() {
-        let payload_map =
-            BTreeMap::from([(ids::KEY_EVENT_CODE.to_string(), ProtocolValue::Byte(58))]);
+        let payload_map = BTreeMap::from([(
+            ids::KEY_EVENT_CODE.to_string(),
+            ProtocolValue::Byte(ids::EventCodes::MARKETPLACE_BUILDING_INFO),
+        )]);
 
         let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
         assert!(
             tx.is_none(),
             "expected None for missing event params key (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            58_u8,
+            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
             payload_map.keys().collect::<Vec<_>>()
         );
     }
@@ -376,7 +384,10 @@ mod tests {
     #[test]
     fn returns_none_for_operation_missing_return_code_key() {
         let payload_map = BTreeMap::from([
-            (ids::KEY_OP_CODE.to_string(), ProtocolValue::Byte(81)),
+            (
+                ids::KEY_OP_CODE.to_string(),
+                ProtocolValue::Byte(ids::OperationCodes::AUCTION_GET_OFFERS as u8),
+            ),
             (
                 ids::KEY_PARAMS.to_string(),
                 ProtocolValue::Dictionary(market_params()),
@@ -389,7 +400,7 @@ mod tests {
             tx.is_none(),
             "expected None for missing operation return code key (command_type={:?}, op_code={}, payload_keys={:?})",
             AlbionCommandType::OperationResponse,
-            81_u8,
+            ids::OperationCodes::AUCTION_GET_OFFERS as u8,
             payload_map.keys().collect::<Vec<_>>()
         );
     }
