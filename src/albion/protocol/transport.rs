@@ -9,11 +9,17 @@ pub struct FramedPayload {
 
 #[derive(Debug)]
 pub enum FrameParseError {
-    Incomplete { offset: usize, needed: usize, remaining: usize },
+    Incomplete {
+        offset: usize,
+        needed: usize,
+        remaining: usize,
+    },
     Invalid(DecodeError),
 }
 
-pub fn parse_udp_payload_incremental(payload: &[u8]) -> Result<Vec<FramedPayload>, FrameParseError> {
+pub fn parse_udp_payload_incremental(
+    payload: &[u8],
+) -> Result<Vec<FramedPayload>, FrameParseError> {
     let mut out = Vec::new();
     let mut cursor = 0usize;
 
@@ -60,7 +66,11 @@ pub fn parse_udp_payload_incremental(payload: &[u8]) -> Result<Vec<FramedPayload
 
 pub fn parse_udp_payload(payload: &[u8]) -> DecodeResult<Vec<FramedPayload>> {
     parse_udp_payload_incremental(payload).map_err(|err| match err {
-        FrameParseError::Incomplete { offset, needed, remaining } => DecodeError::Transport {
+        FrameParseError::Incomplete {
+            offset,
+            needed,
+            remaining,
+        } => DecodeError::Transport {
             offset,
             reason: format!("frame length {needed} exceeds remaining {remaining}"),
         },

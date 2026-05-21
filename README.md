@@ -84,3 +84,7 @@ cargo run -- \
 Headers are auto-created if missing:
 
 `Location | Item | Quantity | Per Item Cost | Total Cost`
+
+## Testing
+
+Run all tests with `cargo test`.

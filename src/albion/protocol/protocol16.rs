@@ -41,7 +41,9 @@ pub fn decode_typed_value(buf: &[u8], cursor: &mut usize) -> DecodeResult<Protoc
         b'o' => Ok(ProtocolValue::Bool(read_u8(buf, cursor)? != 0)),
         b'x' => Ok(ProtocolValue::ByteArray(read_byte_array(buf, cursor)?)),
         b'c' => decode_custom(buf, cursor),
-        b'w' => Ok(ProtocolValue::Object(Box::new(decode_typed_value(buf, cursor)?))),
+        b'w' => Ok(ProtocolValue::Object(Box::new(decode_typed_value(
+            buf, cursor,
+        )?))),
         b'a' => decode_array(buf, cursor),
         b'd' => decode_map(buf, cursor).map(ProtocolValue::Dictionary),
         b'h' => decode_map(buf, cursor).map(ProtocolValue::Hashtable),
@@ -63,7 +65,10 @@ fn read_byte_array(buf: &[u8], cursor: &mut usize) -> DecodeResult<Vec<u8>> {
     if *cursor + len > buf.len() {
         return Err(DecodeError::Protocol16 {
             offset: *cursor,
-            reason: format!("byte array length {len} exceeds available {}", buf.len() - *cursor),
+            reason: format!(
+                "byte array length {len} exceeds available {}",
+                buf.len() - *cursor
+            ),
         });
     }
     let out = buf[*cursor..*cursor + len].to_vec();

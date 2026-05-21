@@ -213,11 +213,21 @@ fn cleanup_stale_channel_pending(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::{IpAddr, Ipv4Addr}, thread, time::Duration};
     use super::*;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        thread,
+        time::Duration,
+    };
 
     fn key() -> SessionKey {
-        SessionKey { src_ip: IpAddr::V4(Ipv4Addr::new(1,1,1,1)), src_port: 1000, dst_ip: IpAddr::V4(Ipv4Addr::new(2,2,2,2)), dst_port: 2000, protocol: 17 }
+        SessionKey {
+            src_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            src_port: 1000,
+            dst_ip: IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+            dst_port: 2000,
+            protocol: 17,
+        }
     }
 
     fn frame(channel: u8, seq: u16, payload: &[u8]) -> Vec<u8> {

@@ -1,12 +1,9 @@
-mod support {
-    pub mod fixture_loader;
-}
+mod support;
 
 use albion_accountant::albion::protocol::{
-    commands::decode_command_envelope,
-    transport::parse_udp_payload,
+    commands::decode_command_envelope, transport::parse_udp_payload,
 };
-use support::fixture_loader::load_hex_fixture;
+use support::load_hex_fixture;
 
 #[test]
 fn parses_transport_frame_and_command_envelope() {
