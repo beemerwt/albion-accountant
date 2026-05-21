@@ -1,0 +1,61 @@
+{
+  "description": "Replay manifest for live Albion market frames through parser, envelope, probe, and transaction mapper stages.",
+  "fixtures": [
+    {
+      "name": "buy_history",
+      "raw_frame": "buy_history_frame.hex",
+      "provenance": {
+        "captured_at": "2026-05-18",
+        "interface": "eth0",
+        "filter_mode": "udp and host game server"
+      },
+      "expected": {
+        "command_envelope": {
+          "command_type": 3
+        },
+        "message_probe": {
+          "status": "operation_decoded",
+          "op_code": 75
+        },
+        "transaction_mapper": {
+          "status": "mapped",
+          "transaction": {
+            "location": "Bridgewatch",
+            "item": "T6_BAG",
+            "quantity": 7,
+            "per_item_cost": 18250,
+            "total_cost": 127750
+          }
+        }
+      }
+    },
+    {
+      "name": "sell_history",
+      "raw_frame": "sell_history_frame.hex",
+      "provenance": {
+        "captured_at": "2026-05-18",
+        "interface": "eth0",
+        "filter_mode": "udp and host game server"
+      },
+      "expected": {
+        "command_envelope": {
+          "command_type": 3
+        },
+        "message_probe": {
+          "status": "operation_decoded",
+          "op_code": 76
+        },
+        "transaction_mapper": {
+          "status": "mapped",
+          "transaction": {
+            "location": "FortSterling",
+            "item": "T5_CAPE",
+            "quantity": 12,
+            "per_item_cost": 9050,
+            "total_cost": 108600
+          }
+        }
+      }
+    }
+  ]
+}
