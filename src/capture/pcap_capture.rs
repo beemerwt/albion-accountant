@@ -5,6 +5,22 @@ use tracing::{info, warn};
 
 use crate::{albion::hosts, config::FilterMode};
 
+fn format_host_filter_term(host: &str) -> String {
+    if let Some((addr, prefix)) = host.split_once('/') {
+        if let (Ok(ip), Ok(prefix_len)) = (addr.parse::<std::net::IpAddr>(), prefix.parse::<u8>()) {
+            let max_prefix = match ip {
+                std::net::IpAddr::V4(_) => 32,
+                std::net::IpAddr::V6(_) => 128,
+            };
+            if prefix_len <= max_prefix {
+                return format!("net {addr}/{prefix_len}");
+            }
+        }
+    }
+    format!("host {host}")
+}
+
+
 pub fn list_interfaces() -> Result<Vec<String>> {
     Ok(pcap::Device::list()?
         .into_iter()
@@ -63,7 +79,7 @@ pub fn build_filter_expression(
             };
             let hosts_expr = hosts
                 .into_iter()
-                .map(|host| format!("host {host}"))
+                .map(|host| format_host_filter_term(&host))
                 .collect::<Vec<_>>()
                 .join(" or ");
             let port_expr = albion_port_expr.unwrap_or("port 5056 or port 5057");
