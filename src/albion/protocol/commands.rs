@@ -1,17 +1,17 @@
 use super::error::{DecodeError, DecodeResult};
 
-pub const COMMAND_TYPE_OPERATION_RESPONSE: u8 = 3;
-pub const COMMAND_TYPE_EVENT: u8 = 7;
+pub const COMMAND_TYPE_OPERATION_RESPONSE: u16 = 3;
+pub const COMMAND_TYPE_EVENT: u16 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlbionCommandType {
     Event,
     OperationResponse,
-    Unsupported(u8),
+    Unsupported(u16),
 }
 
-impl From<u8> for AlbionCommandType {
-    fn from(value: u8) -> Self {
+impl From<u16> for AlbionCommandType {
+    fn from(value: u16) -> Self {
         match value {
             COMMAND_TYPE_EVENT => Self::Event,
             COMMAND_TYPE_OPERATION_RESPONSE => Self::OperationResponse,
@@ -22,7 +22,7 @@ impl From<u8> for AlbionCommandType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhotonMessage {
-    pub command_type: u8,
+    pub command_type: u16,
     pub channel: u8,
     pub reliable_sequence: u16,
     pub payload_length: u16,
@@ -37,12 +37,12 @@ pub fn decode_command_envelope(body: &[u8]) -> DecodeResult<PhotonMessage> {
         });
     }
 
-    let command_type = body[0];
-    let channel = body[1];
-    let reliable_sequence = u16::from_be_bytes([body[2], body[3]]);
-    let payload_length = u16::from_be_bytes([body[4], body[5]]);
+    let command_type = u16::from_be_bytes([body[0], body[1]]);
+    let channel = body[2];
+    let reliable_sequence = u16::from_be_bytes([body[3], body[4]]);
+    let payload_length = u16::from_be_bytes([body[5], body[6]]);
 
-    let expected = 6usize + payload_length as usize;
+    let expected = 7usize + payload_length as usize;
     if body.len() < expected {
         return Err(DecodeError::Command {
             offset: 4,

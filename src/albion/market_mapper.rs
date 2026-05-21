@@ -4,7 +4,7 @@ use super::{ids, protocol::protocol16::ProtocolValue, transaction::MarketTransac
 
 #[derive(Debug, Clone)]
 pub struct DecodedEvent {
-    pub code: u8,
+    pub code: u16,
     pub params: BTreeMap<String, ProtocolValue>,
 }
 

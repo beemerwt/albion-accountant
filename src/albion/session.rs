@@ -104,7 +104,7 @@ impl PacketProcessor {
                 return Vec::new();
             }
             Err(FrameParseError::Invalid(err)) => {
-                warn!(session_key = ?session_key, error = %err, "invalid framed payload; dropping packet bytes");
+                // warn!(session_key = ?session_key, error = %err, "invalid framed payload; dropping packet bytes");
                 return Vec::new();
             }
         };
@@ -283,7 +283,10 @@ mod tests {
 
         let second = p.ingest_packet(key(), &frame(1, 11, b"eleven"));
         assert_eq!(
-            second.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|m| m.reliable_sequence)
+                .collect::<Vec<_>>(),
             vec![10, 11]
         );
     }

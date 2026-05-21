@@ -9,7 +9,10 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::{albion::{ids, transaction::MarketTransaction}, config::Config};
+use crate::{
+    albion::{ids, transaction::MarketTransaction},
+    config::Config,
+};
 
 fn install_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -74,7 +77,10 @@ async fn main() -> Result<()> {
                     albion::decoder::DecodeProbe::EventDecoded { code, key_count } => {
                         if ids::MARKET_EVENT_CODES.contains(&code) {
                             event_code_hits = event_code_hits.wrapping_add(1);
-                            debug!(code, key_count, "market event code observed in decoded message");
+                            debug!(
+                                code,
+                                key_count, "market event code observed in decoded message"
+                            );
                         }
                     }
                     albion::decoder::DecodeProbe::OperationDecoded {
@@ -84,7 +90,12 @@ async fn main() -> Result<()> {
                     } => {
                         if ids::MARKET_OPERATION_CODES.contains(&op_code) {
                             operation_code_hits = operation_code_hits.wrapping_add(1);
-                            debug!(op_code, return_code, key_count, "market operation code observed in decoded message");
+                            debug!(
+                                op_code,
+                                return_code,
+                                key_count,
+                                "market operation code observed in decoded message"
+                            );
                         }
                     }
                     albion::decoder::DecodeProbe::UnsupportedCommandType { command_type } => {

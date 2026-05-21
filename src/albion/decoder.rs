@@ -9,6 +9,8 @@
 
 use super::{
     ids,
+		event_codes::EventCodes,
+		operation_codes::OperationCodes,
     market_mapper::{
         DecodedEvent, DecodedOperationResponse, map_event_to_transaction,
         map_response_to_transaction,
@@ -24,9 +26,18 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub enum DecodeProbe {
-    EventDecoded { code: u8, key_count: usize },
-    OperationDecoded { op_code: u16, return_code: i16, key_count: usize },
-    UnsupportedCommandType { command_type: u8 },
+    EventDecoded {
+        code: u16,
+        key_count: usize,
+    },
+    OperationDecoded {
+        op_code: u16,
+        return_code: i16,
+        key_count: usize,
+    },
+    UnsupportedCommandType {
+        command_type: u16,
+    },
     EventDecodeFailed,
     OperationDecodeFailed,
 }
@@ -86,9 +97,9 @@ fn decoded_event_from_map(
     map: &std::collections::BTreeMap<String, ProtocolValue>,
 ) -> Option<DecodedEvent> {
     let code = match map.get(ids::KEY_EVENT_CODE)? {
-        ProtocolValue::Byte(v) => *v,
-        ProtocolValue::Short(v) => u8::try_from(*v).ok()?,
-        ProtocolValue::Int(v) => u8::try_from(*v).ok()?,
+        ProtocolValue::Byte(v) => u16::from(*v),
+        ProtocolValue::Short(v) => u16::try_from(*v).ok()?,
+        ProtocolValue::Int(v) => u16::try_from(*v).ok()?,
         _ => return None,
     };
     let params = match map.get(ids::KEY_PARAMS)? {
@@ -150,9 +161,9 @@ pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
                 key_count: response.params.len(),
             }
         }
-        AlbionCommandType::Unsupported(command_type) => DecodeProbe::UnsupportedCommandType {
-            command_type,
-        },
+        AlbionCommandType::Unsupported(command_type) => {
+            DecodeProbe::UnsupportedCommandType { command_type }
+        }
     }
 }
 
@@ -229,7 +240,7 @@ mod tests {
             tx_opt.is_some(),
             "expected decoded transaction for framed event packet (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            ids::event_codes::MARKETPLACE_BUILDING_INFO,
+            EventCodes::MarketPlaceBuildingInfo,
             [ids::KEY_EVENT_CODE, ids::KEY_PARAMS]
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -259,7 +270,7 @@ mod tests {
 
         write_string(&mut out, ids::KEY_EVENT_CODE);
         out.push(b'b');
-        out.push(ids::event_codes::MARKETPLACE_BUILDING_INFO);
+        out.push(EventCodes::MarketPlaceBuildingInfo);
 
         write_string(&mut out, ids::KEY_PARAMS);
         out.push(b'd');

@@ -4,4 +4,4 @@ export ALBION_ACCOUNTANT_SHEET_NAME="Market Data"
 
 cargo build
 sudo setcap cap_net_raw,cap_net_admin=eip ./target/debug/albion-accountant
-./target/debug/albion-accountant --interface enp41s0
+./target/debug/albion-accountant --interface enp41s0 --dry-run

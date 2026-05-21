@@ -1,23 +1,17 @@
-pub mod event_codes {
-    pub const MARKETPLACE_BUILDING_INFO: u8 = 58;
-    pub const MARKETPLACE_NOTIFICATION: u8 = 183;
-}
+use crate::albion::event_codes::EventCodes;
+use crate::albion::operation_codes::OperationCodes;
 
 // EventDataCode values from Albion's wire protocol enums.
-pub const MARKET_EVENT_CODES: &[u8] = &[
-    event_codes::MARKETPLACE_BUILDING_INFO,
-    event_codes::MARKETPLACE_NOTIFICATION,
+pub const MARKET_EVENT_CODES: &[u16] = &[
+    EventCodes::MarketPlaceBuildingInfo as u16,
+    EventCodes::MarketPlaceNotification as u16,
 ];
-
-pub mod operation_codes {
-    pub const AUCTION_GET_OFFERS: u16 = 75;
-    pub const AUCTION_GET_REQUESTS: u16 = 76;
-}
 
 // OperationCode values for market interactions.
 pub const MARKET_OPERATION_CODES: &[u16] = &[
-    operation_codes::AUCTION_GET_OFFERS,
-    operation_codes::AUCTION_GET_REQUESTS,
+    OperationCodes::AuctionGetOffers as u16,
+    OperationCodes::AuctionGetRequests as u16,
+    OperationCodes::QuickSellAuctionSellAction as u16,
 ];
 
 // ReturnCode.Success only; non-zero return codes are ignored by design.

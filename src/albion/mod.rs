@@ -1,4 +1,6 @@
 pub mod decoder;
+pub mod event_codes;
+pub mod operation_codes;
 pub mod ids;
 pub mod market;
 pub mod market_mapper;
