@@ -154,11 +154,12 @@ fn flush_channel(
     chan: &mut ChannelState,
     out: &mut Vec<PhotonMessage>,
 ) {
-    // Policy: for a brand-new channel, do not emit immediately from the first seen
-    // sequence. Instead, treat the first observation as a baseline and wait for the
-    // preceding sequence number to arrive first. This avoids emitting `seq = N` before
-    // `seq = N - 1` when capture starts mid-stream. Once synchronized, emit strictly
-    // in sequence, with the existing small/large gap resync behavior.
+    // Policy: for a brand-new channel, buffer the first seen sequence and set
+    // `expected_seq` to `first_seen - 1` (wrapping). This intentionally waits for
+    // a potentially missing lower sequence before releasing buffered messages.
+    // If that lower sequence does not arrive, small-gap advance logic eventually
+    // moves `expected_seq` forward and emits in-order from the earliest pending
+    // sequence; large gaps still trigger resynchronization.
     if chan.expected_seq.is_none() {
         if let Some((&seq, _)) = chan.pending.iter().next() {
             chan.expected_seq = Some(seq.wrapping_sub(1));
@@ -242,19 +243,24 @@ mod tests {
     #[test]
     fn reordered_reliable_messages_emit_in_sequence() {
         let mut p = PacketProcessor::new(Duration::from_secs(60));
-        assert!(p.ingest_packet(key(), &frame(1, 2, b"two")).is_empty());
-        let out = p.ingest_packet(key(), &frame(1, 1, b"one"));
-        assert_eq!(out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(p.ingest_packet(key(), &frame(1, 12, b"twelve")).is_empty());
+        let out = p.ingest_packet(key(), &frame(1, 11, b"eleven"));
+        assert_eq!(
+            out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
+            vec![11, 12]
+        );
     }
 
     #[test]
-    fn initial_gap_is_buffered_until_preceding_sequence_arrives() {
+    fn first_packet_high_seq_is_buffered_until_gap_logic_advances() {
         let mut p = PacketProcessor::new(Duration::from_secs(60));
-        assert!(p.ingest_packet(key(), &frame(1, 2, b"two")).is_empty());
-        let out = p.ingest_packet(key(), &frame(1, 1, b"one"));
+        let first = p.ingest_packet(key(), &frame(1, 900, b"high"));
         assert_eq!(
-            out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
-            vec![1, 2]
+            first
+                .iter()
+                .map(|m| m.reliable_sequence)
+                .collect::<Vec<_>>(),
+            vec![900]
         );
     }
 
@@ -274,12 +280,37 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_packets_are_suppressed() {
+    fn duplicate_suppression_keeps_only_first_emission() {
         let mut p = PacketProcessor::new(Duration::from_secs(60));
-        let first = p.ingest_packet(key(), &frame(1, 5, b"a"));
-        assert_eq!(first.len(), 1);
-        let second = p.ingest_packet(key(), &frame(1, 5, b"a"));
-        assert!(second.is_empty());
+        let first = p.ingest_packet(key(), &frame(1, 40, b"a"));
+        assert_eq!(
+            first
+                .iter()
+                .map(|m| m.reliable_sequence)
+                .collect::<Vec<_>>(),
+            vec![40]
+        );
+
+        let duplicate = p.ingest_packet(key(), &frame(1, 40, b"a"));
+        assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn gap_recovery_advances_and_emits_from_smallest_pending() {
+        let mut p = PacketProcessor::new(Duration::from_secs(60));
+        assert!(p.ingest_packet(key(), &frame(1, 10, b"ten")).is_empty());
+
+        let out = p.ingest_packet(key(), &frame(1, 12, b"twelve"));
+        assert_eq!(
+            out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
+            vec![10]
+        );
+
+        let out = p.ingest_packet(key(), &frame(1, 11, b"eleven"));
+        assert_eq!(
+            out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
+            vec![11, 12]
+        );
     }
 
     #[test]
