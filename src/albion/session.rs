@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
+    ops::Deref,
     time::{Duration, Instant},
 };
 
@@ -54,6 +55,27 @@ pub struct PacketProcessor {
     session_ttl: Duration,
 }
 
+#[derive(Debug, Clone)]
+pub struct DecodeFailureArtifact {
+    pub stage: &'static str,
+    pub error: String,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub struct IngestOutcome {
+    pub messages: Vec<PhotonMessage>,
+    pub failures: Vec<DecodeFailureArtifact>,
+}
+
+impl Deref for IngestOutcome {
+    type Target = [PhotonMessage];
+
+    fn deref(&self) -> &Self::Target {
+        &self.messages
+    }
+}
+
 impl PacketProcessor {
     pub fn new(session_ttl: Duration) -> Self {
         Self {
@@ -62,11 +84,8 @@ impl PacketProcessor {
         }
     }
 
-    pub fn ingest_packet(
-        &mut self,
-        session_key: SessionKey,
-        packet_bytes: &[u8],
-    ) -> Vec<PhotonMessage> {
+    pub fn ingest_packet(&mut self, session_key: SessionKey, packet_bytes: &[u8]) -> IngestOutcome {
+        let mut outcome = IngestOutcome::default();
         let now = Instant::now();
         let state = self
             .sessions
@@ -101,20 +120,28 @@ impl PacketProcessor {
             Err(FrameParseError::Incomplete { .. }) => {
                 state.fragment_buffer = merged;
                 state.last_seen = now;
-                return Vec::new();
+                return outcome;
             }
             Err(FrameParseError::Invalid(err)) => {
-                // warn!(session_key = ?session_key, error = %err, "invalid framed payload; dropping packet bytes");
-                return Vec::new();
+                outcome.failures.push(DecodeFailureArtifact {
+                    stage: "invalid_frame",
+                    error: err.to_string(),
+                    payload: merged,
+                });
+                return outcome;
             }
         };
 
-        let mut emitted = Vec::new();
         for frame in frames {
             let msg = match decode_command_envelope(&frame.body) {
                 Ok(msg) => msg,
                 Err(err) => {
                     warn!(session_key = ?session_key, error = %err, "decode warning");
+                    outcome.failures.push(DecodeFailureArtifact {
+                        stage: "envelope_decode_error",
+                        error: err.to_string(),
+                        payload: frame.body,
+                    });
                     continue;
                 }
             };
@@ -130,10 +157,10 @@ impl PacketProcessor {
             }
             let channel_id = msg.channel;
             chan.pending.insert(msg.reliable_sequence, msg);
-            flush_channel(&session_key, channel_id, chan, &mut emitted);
+            flush_channel(&session_key, channel_id, chan, &mut outcome.messages);
         }
 
-        emitted
+        outcome
     }
 
     pub fn cleanup_stale_sessions(&mut self) {

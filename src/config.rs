@@ -41,6 +41,12 @@ struct Args {
     pub albion_hosts_file: Option<PathBuf>,
     #[arg(long)]
     pub albion_port_expr: Option<String>,
+    #[arg(long)]
+    pub debug_tap_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 256)]
+    pub debug_tap_max_files: usize,
+    #[arg(long, default_value_t = 1)]
+    pub debug_tap_sample_rate: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +63,9 @@ pub struct Config {
     pub filter_mode: FilterMode,
     pub albion_hosts_file: Option<PathBuf>,
     pub albion_port_expr: Option<String>,
+    pub debug_tap_dir: Option<PathBuf>,
+    pub debug_tap_max_files: usize,
+    pub debug_tap_sample_rate: usize,
 }
 
 impl Config {
@@ -82,6 +91,9 @@ impl Config {
             filter_mode: args.filter_mode,
             albion_hosts_file: args.albion_hosts_file,
             albion_port_expr: args.albion_port_expr,
+            debug_tap_dir: args.debug_tap_dir,
+            debug_tap_max_files: args.debug_tap_max_files,
+            debug_tap_sample_rate: args.debug_tap_sample_rate.max(1),
         })
     }
 
@@ -157,6 +169,9 @@ mod tests {
             filter_mode: FilterMode::Broad,
             albion_hosts_file: None,
             albion_port_expr: None,
+            debug_tap_dir: None,
+            debug_tap_max_files: 256,
+            debug_tap_sample_rate: 1,
         };
 
         assert!(config.validate_google_config().is_ok());
@@ -177,6 +192,9 @@ mod tests {
             filter_mode: FilterMode::Broad,
             albion_hosts_file: None,
             albion_port_expr: None,
+            debug_tap_dir: None,
+            debug_tap_max_files: 256,
+            debug_tap_sample_rate: 1,
         };
 
         assert!(config.validate_google_config().is_err());
