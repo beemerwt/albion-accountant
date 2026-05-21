@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 
-const DEFAULT_HOSTS_FILE: &str = "src/albion/hosts.txt";
+const DEFAULT_HOSTS_FILE: &str = "hosts.txt";
 
 pub fn load_hosts(hosts_file_override: Option<&Path>) -> Result<Vec<String>> {
     let path = hosts_file_override.unwrap_or_else(|| Path::new(DEFAULT_HOSTS_FILE));
