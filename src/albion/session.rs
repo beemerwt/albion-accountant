@@ -154,9 +154,14 @@ fn flush_channel(
     chan: &mut ChannelState,
     out: &mut Vec<PhotonMessage>,
 ) {
+    // Policy: for a brand-new channel, do not emit immediately from the first seen
+    // sequence. Instead, treat the first observation as a baseline and wait for the
+    // preceding sequence number to arrive first. This avoids emitting `seq = N` before
+    // `seq = N - 1` when capture starts mid-stream. Once synchronized, emit strictly
+    // in sequence, with the existing small/large gap resync behavior.
     if chan.expected_seq.is_none() {
         if let Some((&seq, _)) = chan.pending.iter().next() {
-            chan.expected_seq = Some(seq);
+            chan.expected_seq = Some(seq.wrapping_sub(1));
         }
     }
 
@@ -240,6 +245,32 @@ mod tests {
         assert!(p.ingest_packet(key(), &frame(1, 2, b"two")).is_empty());
         let out = p.ingest_packet(key(), &frame(1, 1, b"one"));
         assert_eq!(out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn initial_gap_is_buffered_until_preceding_sequence_arrives() {
+        let mut p = PacketProcessor::new(Duration::from_secs(60));
+        assert!(p.ingest_packet(key(), &frame(1, 2, b"two")).is_empty());
+        let out = p.ingest_packet(key(), &frame(1, 1, b"one"));
+        assert_eq!(
+            out.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn in_order_messages_emit_normally() {
+        let mut p = PacketProcessor::new(Duration::from_secs(60));
+        let first = p.ingest_packet(key(), &frame(1, 10, b"ten"));
+        assert!(first.is_empty());
+        let second = p.ingest_packet(key(), &frame(1, 11, b"eleven"));
+        assert_eq!(
+            second
+                .iter()
+                .map(|m| m.reliable_sequence)
+                .collect::<Vec<_>>(),
+            vec![10, 11]
+        );
     }
 
     #[test]
