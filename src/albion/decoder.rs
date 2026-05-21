@@ -1,5 +1,5 @@
 // Maintainer architecture note:
-// 1) transport::parse_udp_payload splits Photon UDP datagrams into frames.
+// 1) transport::parse_udp_payload_incremental splits Photon UDP datagrams into frames.
 // 2) commands::decode_command_envelope parses each frame into PhotonMessage metadata + payload.
 // 3) events::decode_event_payload / operations::decode_operation_payload decode Protocol16 maps.
 // 4) market_mapper converts decoded protocol fields into MarketTransaction domain objects.
@@ -14,24 +14,13 @@ use super::{
         map_response_to_transaction,
     },
     protocol::{
-        commands::{AlbionCommandType, PhotonMessage, decode_command_envelope},
+        commands::{AlbionCommandType, PhotonMessage},
         events::decode_event_payload,
         operations::decode_operation_payload,
         protocol16::ProtocolValue,
-        transport::parse_udp_payload,
     },
     transaction::MarketTransaction,
 };
-
-pub fn decode_packet(packet: &[u8]) -> Vec<PhotonMessage> {
-    match parse_udp_payload(packet) {
-        Ok(frames) => frames
-            .into_iter()
-            .filter_map(|f| decode_command_envelope(&f.body).ok())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
 
 pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTransaction> {
     // Compile-time guard: only protocol-decoded mappings are supported here;
@@ -176,7 +165,11 @@ pub fn extract_udp_payload_ipv4(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::albion::protocol::{commands::AlbionCommandType, protocol16::ProtocolValue};
+    use crate::albion::protocol::{
+        commands::{AlbionCommandType, decode_command_envelope},
+        protocol16::ProtocolValue,
+        transport::parse_udp_payload_incremental,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -184,13 +177,17 @@ mod tests {
         let payload = build_event_payload("Martlock", "T4_BAG", 3, 1250);
         let packet = build_framed_packet(payload);
 
-        let messages = decode_packet(&packet);
+        let frames = parse_udp_payload_incremental(&packet).expect("valid framed packet");
+        let messages: Vec<PhotonMessage> = frames
+            .into_iter()
+            .map(|f| decode_command_envelope(&f.body).expect("valid command envelope"))
+            .collect();
         let tx_opt = extract_market_transactions(&messages).into_iter().next();
         assert!(
             tx_opt.is_some(),
             "expected decoded transaction for framed event packet (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
+            ids::event_codes::MARKETPLACE_BUILDING_INFO,
             [ids::KEY_EVENT_CODE, ids::KEY_PARAMS]
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -220,7 +217,7 @@ mod tests {
 
         write_string(&mut out, ids::KEY_EVENT_CODE);
         out.push(b'b');
-        out.push(ids::EventCodes::MARKETPLACE_BUILDING_INFO);
+        out.push(ids::event_codes::MARKETPLACE_BUILDING_INFO);
 
         write_string(&mut out, ids::KEY_PARAMS);
         out.push(b'd');
@@ -271,7 +268,7 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_EVENT_CODE.to_string(),
-                ProtocolValue::Byte(ids::EventCodes::MARKETPLACE_BUILDING_INFO),
+                ProtocolValue::Byte(ids::event_codes::MARKETPLACE_BUILDING_INFO),
             ),
             (
                 ids::KEY_PARAMS.to_string(),
@@ -283,7 +280,7 @@ mod tests {
             tx_opt.is_some(),
             "expected event dispatch to decode (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
+            ids::event_codes::MARKETPLACE_BUILDING_INFO,
             payload_map.keys().collect::<Vec<_>>()
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -296,7 +293,7 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_OP_CODE.to_string(),
-                ProtocolValue::Byte(ids::OperationCodes::AUCTION_GET_OFFERS as u8),
+                ProtocolValue::Byte(ids::operation_codes::AUCTION_GET_OFFERS as u8),
             ),
             (ids::KEY_RETURN_CODE.to_string(), ProtocolValue::Short(0)),
             (
@@ -310,7 +307,7 @@ mod tests {
             tx_opt.is_some(),
             "expected operation response dispatch to decode (command_type={:?}, op_code={}, payload_keys={:?})",
             AlbionCommandType::OperationResponse,
-            ids::OperationCodes::AUCTION_GET_OFFERS as u8,
+            ids::operation_codes::AUCTION_GET_OFFERS as u8,
             payload_map.keys().collect::<Vec<_>>()
         );
         let tx = tx_opt.expect("checked is_some above");
@@ -364,7 +361,7 @@ mod tests {
     fn returns_none_for_event_missing_params_key() {
         let payload_map = BTreeMap::from([(
             ids::KEY_EVENT_CODE.to_string(),
-            ProtocolValue::Byte(ids::EventCodes::MARKETPLACE_BUILDING_INFO),
+            ProtocolValue::Byte(ids::event_codes::MARKETPLACE_BUILDING_INFO),
         )]);
 
         let tx = map_decoded_payload_to_transaction(AlbionCommandType::Event, &payload_map);
@@ -372,7 +369,7 @@ mod tests {
             tx.is_none(),
             "expected None for missing event params key (command_type={:?}, event_code={}, payload_keys={:?})",
             AlbionCommandType::Event,
-            ids::EventCodes::MARKETPLACE_BUILDING_INFO,
+            ids::event_codes::MARKETPLACE_BUILDING_INFO,
             payload_map.keys().collect::<Vec<_>>()
         );
     }
@@ -382,7 +379,7 @@ mod tests {
         let payload_map = BTreeMap::from([
             (
                 ids::KEY_OP_CODE.to_string(),
-                ProtocolValue::Byte(ids::OperationCodes::AUCTION_GET_OFFERS as u8),
+                ProtocolValue::Byte(ids::operation_codes::AUCTION_GET_OFFERS as u8),
             ),
             (
                 ids::KEY_PARAMS.to_string(),
@@ -396,7 +393,7 @@ mod tests {
             tx.is_none(),
             "expected None for missing operation return code key (command_type={:?}, op_code={}, payload_keys={:?})",
             AlbionCommandType::OperationResponse,
-            ids::OperationCodes::AUCTION_GET_OFFERS as u8,
+            ids::operation_codes::AUCTION_GET_OFFERS as u8,
             payload_map.keys().collect::<Vec<_>>()
         );
     }

@@ -1,4 +1,4 @@
-use super::error::{DecodeError, DecodeResult};
+use super::error::DecodeError;
 
 const MAX_FRAME_LENGTH: usize = 60 * 1024;
 
@@ -64,40 +64,26 @@ pub fn parse_udp_payload_incremental(
     Ok(out)
 }
 
-pub fn parse_udp_payload(payload: &[u8]) -> DecodeResult<Vec<FramedPayload>> {
-    parse_udp_payload_incremental(payload).map_err(|err| match err {
-        FrameParseError::Incomplete {
-            offset,
-            needed,
-            remaining,
-        } => DecodeError::Transport {
-            offset,
-            reason: format!("frame length {needed} exceeds remaining {remaining}"),
-        },
-        FrameParseError::Invalid(err) => err,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn rejects_zero_length_frame() {
-        let err = parse_udp_payload(&[0, 0]).unwrap_err();
-        assert!(format!("{err}").contains("zero-length"));
+        let err = parse_udp_payload_incremental(&[0, 0]).unwrap_err();
+        assert!(format!("{err:?}").contains("zero-length"));
     }
 
     #[test]
     fn rejects_oversized_frame_length() {
-        let err = parse_udp_payload(&[0xFF, 0xFF]).unwrap_err();
-        assert!(format!("{err}").contains("exceeds max"));
+        let err = parse_udp_payload_incremental(&[0xFF, 0xFF]).unwrap_err();
+        assert!(format!("{err:?}").contains("exceeds max"));
     }
 
     #[test]
     fn rejects_trailing_noise_after_frames() {
         let payload = [0, 1, 42, 0xFF];
-        let err = parse_udp_payload(&payload).unwrap_err();
-        assert!(format!("{err}").contains("trailing byte noise"));
+        let err = parse_udp_payload_incremental(&payload).unwrap_err();
+        assert!(format!("{err:?}").contains("trailing byte noise"));
     }
 }

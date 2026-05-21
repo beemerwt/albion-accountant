@@ -10,8 +10,4 @@ pub enum DecodeError {
     Command { offset: usize, reason: String },
     #[error("protocol16 decode error at offset {offset}: {reason}")]
     Protocol16 { offset: usize, reason: String },
-    #[error("event payload decode error: {reason}")]
-    Event { reason: String },
-    #[error("operation payload decode error: {reason}")]
-    Operation { reason: String },
 }
