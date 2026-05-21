@@ -22,6 +22,15 @@ use super::{
     transaction::MarketTransaction,
 };
 
+#[derive(Debug, Clone)]
+pub enum DecodeProbe {
+    EventDecoded { code: u8, key_count: usize },
+    OperationDecoded { op_code: u16, return_code: i16, key_count: usize },
+    UnsupportedCommandType { command_type: u8 },
+    EventDecodeFailed,
+    OperationDecodeFailed,
+}
+
 pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTransaction> {
     // Compile-time guard: only protocol-decoded mappings are supported here;
     // non-protocol text fallbacks are intentionally unsupported.
@@ -112,6 +121,39 @@ fn decoded_response_from_map(
         return_code,
         params,
     })
+}
+
+pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
+    match AlbionCommandType::from(message.command_type) {
+        AlbionCommandType::Event => {
+            let Ok(event_map) = decode_event_payload(&message.payload) else {
+                return DecodeProbe::EventDecodeFailed;
+            };
+            let Some(event) = decoded_event_from_map(&event_map) else {
+                return DecodeProbe::EventDecodeFailed;
+            };
+            DecodeProbe::EventDecoded {
+                code: event.code,
+                key_count: event.params.len(),
+            }
+        }
+        AlbionCommandType::OperationResponse => {
+            let Ok(response_map) = decode_operation_payload(&message.payload) else {
+                return DecodeProbe::OperationDecodeFailed;
+            };
+            let Some(response) = decoded_response_from_map(&response_map) else {
+                return DecodeProbe::OperationDecodeFailed;
+            };
+            DecodeProbe::OperationDecoded {
+                op_code: response.op_code,
+                return_code: response.return_code,
+                key_count: response.params.len(),
+            }
+        }
+        AlbionCommandType::Unsupported(command_type) => DecodeProbe::UnsupportedCommandType {
+            command_type,
+        },
+    }
 }
 
 pub fn extract_udp_payload_ipv4(
