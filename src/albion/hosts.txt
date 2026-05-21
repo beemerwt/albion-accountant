@@ -1,0 +1,6 @@
+# Albion Online endpoints (seed list; can be overridden with --albion-hosts-file)
+# One IP per line
+5.188.125.39
+5.188.125.40
+5.188.125.41
+5.188.125.42
