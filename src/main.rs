@@ -36,6 +36,17 @@ struct PipelineCounters {
     operation_decode_failures: usize,
     successful_decodes: usize,
     mapped_transactions_emitted: usize,
+    reliable_commands_seen: usize,
+    unreliable_commands_seen: usize,
+    fragment_commands_seen: usize,
+    disconnect_commands_seen: usize,
+    unknown_message_types: usize,
+    encrypted_like_payloads_seen: usize,
+    small_gap_advances: usize,
+    large_gap_resyncs: usize,
+    duplicate_sequences_suppressed: usize,
+    pending_queue_drops: usize,
+    fragment_buffered_packets: usize,
 }
 
 struct DebugTap {
@@ -279,26 +290,43 @@ async fn main() -> Result<()> {
                         let messages = outcome.messages;
                         for message in &messages {
                             match albion::decoder::probe_message(message) {
-                                albion::decoder::DecodeProbe::EventDecoded { code, key_count } => {
+                                albion::decoder::DecodeProbe::EventDecoded {
+                                    code,
+                                    key_count,
+                                    message_type,
+                                    encrypted_like,
+                                } => {
                                     if ids::MARKET_EVENT_CODES.contains(&code) {
                                         counters.successful_decodes =
                                             counters.successful_decodes.wrapping_add(1);
-                                        debug!(interface = %interface, code, key_count, "market event code observed in decoded message");
+                                        debug!(interface = %interface, code, key_count, message_type, encrypted_like, "market event code observed in decoded message");
+                                    }
+                                    if encrypted_like {
+                                        counters.encrypted_like_payloads_seen =
+                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
                                     }
                                 }
                                 albion::decoder::DecodeProbe::OperationDecoded {
                                     op_code,
                                     return_code,
                                     key_count,
+                                    message_type,
+                                    encrypted_like,
                                 } => {
                                     if ids::MARKET_OPERATION_CODES.contains(&op_code) {
                                         counters.successful_decodes =
                                             counters.successful_decodes.wrapping_add(1);
-                                        debug!(interface = %interface, op_code, return_code, key_count, "market operation code observed in decoded message");
+                                        debug!(interface = %interface, op_code, return_code, key_count, message_type, encrypted_like, "market operation code observed in decoded message");
+                                    }
+                                    if encrypted_like {
+                                        counters.encrypted_like_payloads_seen =
+                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
                                     }
                                 }
                                 albion::decoder::DecodeProbe::UnsupportedCommandType {
                                     command_type,
+                                    message_type,
+                                    encrypted_like,
                                 } => {
                                     counters.unsupported_command_types =
                                         counters.unsupported_command_types.wrapping_add(1);
@@ -306,6 +334,14 @@ async fn main() -> Result<()> {
                                         counters.unsupported_command_types,
                                     ) {
                                         debug!(drop_reason = "unsupported_command_type", interface = %interface, command_type, "unsupported command type observed");
+                                    }
+                                    if message_type == "unknown" {
+                                        counters.unknown_message_types =
+                                            counters.unknown_message_types.wrapping_add(1);
+                                    }
+                                    if encrypted_like {
+                                        counters.encrypted_like_payloads_seen =
+                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
                                     }
                                     if let Some(tap) = &debug_tap
                                         && let Ok(mut guard) = tap.lock()
@@ -329,6 +365,43 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        for diag in &outcome.diagnostics {
+                            match diag.command_kind {
+                                "reliable" => {
+                                    counters.reliable_commands_seen =
+                                        counters.reliable_commands_seen.wrapping_add(1)
+                                }
+                                "unreliable" => {
+                                    counters.unreliable_commands_seen =
+                                        counters.unreliable_commands_seen.wrapping_add(1)
+                                }
+                                "fragment" => {
+                                    counters.fragment_commands_seen =
+                                        counters.fragment_commands_seen.wrapping_add(1)
+                                }
+                                "disconnect" => {
+                                    counters.disconnect_commands_seen =
+                                        counters.disconnect_commands_seen.wrapping_add(1)
+                                }
+                                _ => {}
+                            }
+                            debug!(interface = %interface, command_type = diag.command_type, command_kind = diag.command_kind, message_type = if diag.command_kind == "event" { "event" } else if diag.command_kind == "operation_response" { "response" } else { "unknown" }, channel = diag.channel, reliable_sequence = diag.reliable_sequence, payload_length = diag.payload_length, encrypted_like = diag.has_encrypted_like_prefix, "ingest command diagnostics");
+                        }
+                        counters.small_gap_advances = counters
+                            .small_gap_advances
+                            .wrapping_add(outcome.summary.small_gap_advances);
+                        counters.large_gap_resyncs = counters
+                            .large_gap_resyncs
+                            .wrapping_add(outcome.summary.large_gap_resyncs);
+                        counters.duplicate_sequences_suppressed = counters
+                            .duplicate_sequences_suppressed
+                            .wrapping_add(outcome.summary.duplicate_sequences_suppressed);
+                        counters.pending_queue_drops = counters
+                            .pending_queue_drops
+                            .wrapping_add(outcome.summary.pending_queue_drops);
+                        counters.fragment_buffered_packets = counters
+                            .fragment_buffered_packets
+                            .wrapping_add(outcome.summary.fragment_buffered_packets);
                         for txn in albion::decoder::extract_market_transactions(&messages) {
                             counters.mapped_transactions_emitted =
                                 counters.mapped_transactions_emitted.wrapping_add(1);
@@ -336,7 +409,7 @@ async fn main() -> Result<()> {
                             let _ = capture_tx.blocking_send(txn);
                         }
                         if counters.packets_seen % 2048 == 0 {
-                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), "decoder pipeline summary");
+                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, reliable_commands_seen = counters.reliable_commands_seen, unreliable_commands_seen = counters.unreliable_commands_seen, fragment_commands_seen = counters.fragment_commands_seen, disconnect_commands_seen = counters.disconnect_commands_seen, unknown_message_types = counters.unknown_message_types, encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen, small_gap_advances = counters.small_gap_advances, large_gap_resyncs = counters.large_gap_resyncs, duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed, pending_queue_drops = counters.pending_queue_drops, fragment_buffered_packets = counters.fragment_buffered_packets, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), "decoder pipeline summary");
                         }
                     }
                 });

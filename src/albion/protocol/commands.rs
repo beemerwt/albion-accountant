@@ -2,9 +2,17 @@ use super::error::{DecodeError, DecodeResult};
 
 pub const COMMAND_TYPE_OPERATION_RESPONSE: u16 = 3;
 pub const COMMAND_TYPE_EVENT: u16 = 7;
+pub const COMMAND_TYPE_DISCONNECT: u16 = 4;
+pub const COMMAND_TYPE_UNRELIABLE: u16 = 0;
+pub const COMMAND_TYPE_RELIABLE: u16 = 6;
+pub const COMMAND_TYPE_FRAGMENT: u16 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlbionCommandType {
+    Reliable,
+    Unreliable,
+    Fragment,
+    Disconnect,
     Event,
     OperationResponse,
     Unsupported(u16),
@@ -13,9 +21,27 @@ pub enum AlbionCommandType {
 impl From<u16> for AlbionCommandType {
     fn from(value: u16) -> Self {
         match value {
+            COMMAND_TYPE_RELIABLE => Self::Reliable,
+            COMMAND_TYPE_UNRELIABLE => Self::Unreliable,
+            COMMAND_TYPE_FRAGMENT => Self::Fragment,
+            COMMAND_TYPE_DISCONNECT => Self::Disconnect,
             COMMAND_TYPE_EVENT => Self::Event,
             COMMAND_TYPE_OPERATION_RESPONSE => Self::OperationResponse,
             other => Self::Unsupported(other),
+        }
+    }
+}
+
+impl AlbionCommandType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AlbionCommandType::Reliable => "reliable",
+            AlbionCommandType::Unreliable => "unreliable",
+            AlbionCommandType::Fragment => "fragment",
+            AlbionCommandType::Disconnect => "disconnect",
+            AlbionCommandType::Event => "event",
+            AlbionCommandType::OperationResponse => "operation_response",
+            AlbionCommandType::Unsupported(_) => "unsupported",
         }
     }
 }
