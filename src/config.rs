@@ -6,8 +6,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
+    #[arg(long, value_delimiter = ',')]
+    pub interface: Vec<String>,
     #[arg(long)]
-    pub interface: Option<String>,
+    pub all_interfaces: bool,
     #[arg(long)]
     pub list_interfaces: bool,
     #[arg(long, env = "ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET")]
@@ -28,7 +30,8 @@ struct Args {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub interface: Option<String>,
+    pub interfaces: Vec<String>,
+    pub all_interfaces: bool,
     pub list_interfaces: bool,
     pub google_client_secret: Option<PathBuf>,
     pub google_token_cache: PathBuf,
@@ -41,9 +44,15 @@ impl Config {
     pub fn load() -> Result<Self> {
         let args = Args::parse();
         Ok(Self {
-            interface: args
-                .interface
-                .or_else(|| std::env::var("ALBION_ACCOUNTANT_INTERFACE").ok()),
+            interfaces: if args.interface.is_empty() {
+                std::env::var("ALBION_ACCOUNTANT_INTERFACE")
+                    .ok()
+                    .into_iter()
+                    .collect()
+            } else {
+                args.interface
+            },
+            all_interfaces: args.all_interfaces,
             list_interfaces: args.list_interfaces,
             google_client_secret: args.google_client_secret,
             google_token_cache: args.google_token_cache,
@@ -79,8 +88,14 @@ mod tests {
     fn cli_overrides_env_interface() {
         temp_env::with_var("ALBION_ACCOUNTANT_INTERFACE", Some("eth0"), || {
             let args = Args::parse_from(["x", "--interface", "wlan0"]);
-            assert_eq!(args.interface.as_deref(), Some("wlan0"));
+            assert_eq!(args.interface, vec!["wlan0"]);
         });
+    }
+
+    #[test]
+    fn interface_allows_csv_or_repeated_values() {
+        let args = Args::parse_from(["x", "--interface", "eth0,wlan0", "--interface", "en0"]);
+        assert_eq!(args.interface, vec!["eth0", "wlan0", "en0"]);
     }
 
     #[test]
@@ -101,7 +116,8 @@ mod tests {
     #[test]
     fn dry_run_does_not_require_google_config() {
         let config = Config {
-            interface: None,
+            interfaces: vec![],
+            all_interfaces: false,
             list_interfaces: false,
             google_client_secret: None,
             google_token_cache: ".albion-accountant-token.json".into(),
@@ -116,7 +132,8 @@ mod tests {
     #[test]
     fn non_dry_run_requires_google_config() {
         let config = Config {
-            interface: None,
+            interfaces: vec![],
+            all_interfaces: false,
             list_interfaces: false,
             google_client_secret: None,
             google_token_cache: ".albion-accountant-token.json".into(),
