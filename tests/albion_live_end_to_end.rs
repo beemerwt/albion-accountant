@@ -83,9 +83,9 @@ fn decoded_response_from_map(
     map: &BTreeMap<String, ProtocolValue>,
 ) -> Option<DecodedOperationResponse> {
     let op_code = match map.get("op_code")? {
-        ProtocolValue::Byte(v) => *v,
-        ProtocolValue::Short(v) => u8::try_from(*v).ok()?,
-        ProtocolValue::Int(v) => u8::try_from(*v).ok()?,
+        ProtocolValue::Byte(v) => u16::try_from(*v).ok()?,
+        ProtocolValue::Short(v) => u16::try_from(*v).ok()?,
+        ProtocolValue::Int(v) => u16::try_from(*v).ok()?,
         _ => return None,
     };
     let return_code = match map.get("return_code")? {
