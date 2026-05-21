@@ -1,12 +1,10 @@
-mod support {
-    pub mod fixture_loader;
-}
+mod support;
 
 use albion_accountant::albion::{
     decoder::{decode_packet, extract_market_transactions, extract_udp_payload_ipv4},
-    market_mapper::{map_response_to_transaction, DecodedOperationResponse},
+    market_mapper::{DecodedOperationResponse, map_response_to_transaction},
     protocol::{
-        commands::{decode_command_envelope, AlbionCommandType},
+        commands::{AlbionCommandType, decode_command_envelope},
         operations::decode_operation_payload,
         protocol16::ProtocolValue,
         transport::parse_udp_payload,
@@ -15,13 +13,16 @@ use albion_accountant::albion::{
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, net::IpAddr};
-use support::fixture_loader::{load_hex_fixture, load_json_fixture};
+use support::load_hex_fixture;
 
 #[test]
 fn albion_live_fixtures_cover_full_market_pipeline() {
     let manifest = load_json_fixture("albion_live/coverage_manifest.json");
     let fixtures = manifest["fixtures"].as_array().expect("fixtures array");
-    assert!(!fixtures.is_empty(), "coverage manifest must include fixtures");
+    assert!(
+        !fixtures.is_empty(),
+        "coverage manifest must include fixtures"
+    );
 
     for fixture in fixtures {
         let name = fixture["name"].as_str().expect("name");
@@ -39,20 +40,41 @@ fn albion_live_fixtures_cover_full_market_pipeline() {
         assert_eq!(frames.len(), 1, "{name}: expected single transport frame");
 
         let message = decode_command_envelope(&frames[0].body).expect("command envelope parses");
-        assert_eq!(AlbionCommandType::from(message.command_type), AlbionCommandType::OperationResponse, "{name}: must decode operation response command");
-        assert_eq!(message.payload.len(), usize::from(message.payload_length), "{name}: payload length mismatch");
-        assert_eq!(message.command_type, expected["command_type"].as_u64().unwrap() as u8);
+        assert_eq!(
+            AlbionCommandType::from(message.command_type),
+            AlbionCommandType::OperationResponse,
+            "{name}: must decode operation response command"
+        );
+        assert_eq!(
+            message.payload.len(),
+            usize::from(message.payload_length),
+            "{name}: payload length mismatch"
+        );
+        assert_eq!(
+            message.command_type,
+            expected["command_type"].as_u64().unwrap() as u8
+        );
 
-        let payload_map = decode_operation_payload(&message.payload).expect("operation payload parses");
-        let decoded_response = decoded_response_from_map(&payload_map).expect("response fields available");
-        assert_eq!(decoded_response.op_code as u64, expected["opcode"].as_u64().unwrap(), "{name}: opcode mismatch");
+        let payload_map =
+            decode_operation_payload(&message.payload).expect("operation payload parses");
+        let decoded_response =
+            decoded_response_from_map(&payload_map).expect("response fields available");
+        assert_eq!(
+            decoded_response.op_code as u64,
+            expected["opcode"].as_u64().unwrap(),
+            "{name}: opcode mismatch"
+        );
 
         let tx = map_response_to_transaction(&decoded_response).expect("maps to MarketTransaction");
         assert_market_transaction(&tx, &expected["transaction"], name);
 
         let messages = decode_packet(udp_payload);
         let final_txs = extract_market_transactions(&messages);
-        assert_eq!(final_txs.len(), 1, "{name}: expected exactly one final transaction");
+        assert_eq!(
+            final_txs.len(),
+            1,
+            "{name}: expected exactly one final transaction"
+        );
         assert_eq!(final_txs[0], tx, "{name}: mapping pipeline changed output");
     }
 }
@@ -83,7 +105,14 @@ fn decoded_response_from_map(
     })
 }
 
-fn assert_transport(expected: &Value, src_ip: IpAddr, src_port: u16, dst_ip: IpAddr, dst_port: u16, proto: u8) {
+fn assert_transport(
+    expected: &Value,
+    src_ip: IpAddr,
+    src_port: u16,
+    dst_ip: IpAddr,
+    dst_port: u16,
+    proto: u8,
+) {
     let t = &expected["transport"];
     assert_eq!(src_ip.to_string(), t["src_ip"].as_str().unwrap());
     assert_eq!(src_port as u64, t["src_port"].as_u64().unwrap());
@@ -93,9 +122,41 @@ fn assert_transport(expected: &Value, src_ip: IpAddr, src_port: u16, dst_ip: IpA
 }
 
 fn assert_market_transaction(actual: &MarketTransaction, expected: &Value, name: &str) {
-    assert_eq!(actual.location, expected["location"].as_str().unwrap(), "{name}: location mismatch");
-    assert_eq!(actual.item, expected["item"].as_str().unwrap(), "{name}: item mismatch");
-    assert_eq!(actual.quantity as u64, expected["quantity"].as_u64().unwrap(), "{name}: quantity mismatch");
-    assert_eq!(actual.per_item_cost, expected["per_item_cost"].as_u64().unwrap(), "{name}: per-item cost mismatch");
-    assert_eq!(actual.total_cost, expected["total_cost"].as_u64().unwrap(), "{name}: total cost mismatch");
+    assert_eq!(
+        actual.location,
+        expected["location"].as_str().unwrap(),
+        "{name}: location mismatch"
+    );
+    assert_eq!(
+        actual.item,
+        expected["item"].as_str().unwrap(),
+        "{name}: item mismatch"
+    );
+    assert_eq!(
+        actual.quantity as u64,
+        expected["quantity"].as_u64().unwrap(),
+        "{name}: quantity mismatch"
+    );
+    assert_eq!(
+        actual.per_item_cost,
+        expected["per_item_cost"].as_u64().unwrap(),
+        "{name}: per-item cost mismatch"
+    );
+    assert_eq!(
+        actual.total_cost,
+        expected["total_cost"].as_u64().unwrap(),
+        "{name}: total cost mismatch"
+    );
+}
+
+use std::{fs, path::PathBuf};
+fn load_json_fixture(name: &str) -> Value {
+    let raw = fs::read_to_string(fixture_path(name)).expect("json fixture readable");
+    serde_json::from_str(&raw).expect("valid json fixture")
+}
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
 }

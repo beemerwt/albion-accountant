@@ -41,12 +41,7 @@ fn build_transaction(params: &BTreeMap<String, ProtocolValue>) -> Option<MarketT
         "location",
     )?;
     let item = read_required_string(params, ids::ITEM_ID_KEY, ids::ITEM_ID_KEY_ALIASES, "item")?;
-    let quantity = read_required_u32(
-        params,
-        ids::QUANTITY_KEY,
-        ids::QUANTITY_KEY_ALIASES,
-        "qty",
-    )?;
+    let quantity = read_required_u32(params, ids::QUANTITY_KEY, ids::QUANTITY_KEY_ALIASES, "qty")?;
     let per_item_cost =
         read_required_u64(params, ids::SILVER_KEY, ids::SILVER_KEY_ALIASES, "price")?;
     MarketTransaction::new(location, item, quantity, per_item_cost, None).ok()
@@ -131,13 +126,18 @@ mod tests {
 
     fn valid_market_params() -> BTreeMap<String, ProtocolValue> {
         BTreeMap::from([
-            ("location".to_string(), ProtocolValue::String("Martlock".to_string())),
-            ("item".to_string(), ProtocolValue::String("T4_BAG".to_string())),
+            (
+                "location".to_string(),
+                ProtocolValue::String("Martlock".to_string()),
+            ),
+            (
+                "item".to_string(),
+                ProtocolValue::String("T4_BAG".to_string()),
+            ),
             ("qty".to_string(), ProtocolValue::Int(3)),
             ("price".to_string(), ProtocolValue::Long(1250)),
         ])
     }
-
 
     #[test]
     fn operation_opcode_mapping_accepts_supported_and_rejects_unsupported() {
