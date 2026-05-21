@@ -169,22 +169,27 @@ pub fn extract_udp_payload_ipv4(
     packet: &[u8],
 ) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
     if packet.len() < 14 {
+        tracing::debug!(drop_reason = "malformed_eth", packet_len = packet.len(), "packet rejected");
         return None;
     }
     let ether_type = u16::from_be_bytes([packet[12], packet[13]]);
     if ether_type != 0x0800 {
+        tracing::debug!(drop_reason = "non_ipv4", packet_len = packet.len(), ether_type, "packet rejected");
         return None;
     }
     let ip_start = 14usize;
     if packet.len() < ip_start + 20 {
+        tracing::debug!(drop_reason = "malformed_ipv4", packet_len = packet.len(), ether_type, "packet rejected");
         return None;
     }
     let ihl = (packet[ip_start] & 0x0f) as usize * 4;
     if ihl < 20 || packet.len() < ip_start + ihl {
+        tracing::debug!(drop_reason = "malformed_ipv4", packet_len = packet.len(), ether_type, ihl, "packet rejected");
         return None;
     }
     let proto = packet[ip_start + 9];
     if proto != 17 {
+        tracing::debug!(drop_reason = "non_udp", packet_len = packet.len(), ether_type, proto, "packet rejected");
         return None;
     }
     let src_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
@@ -201,12 +206,14 @@ pub fn extract_udp_payload_ipv4(
     ));
     let udp_start = ip_start + ihl;
     if packet.len() < udp_start + 8 {
+        tracing::debug!(drop_reason = "malformed_udp", packet_len = packet.len(), proto, "packet rejected");
         return None;
     }
     let src_port = u16::from_be_bytes([packet[udp_start], packet[udp_start + 1]]);
     let dst_port = u16::from_be_bytes([packet[udp_start + 2], packet[udp_start + 3]]);
     let udp_len = u16::from_be_bytes([packet[udp_start + 4], packet[udp_start + 5]]) as usize;
     if udp_len < 8 || packet.len() < udp_start + udp_len {
+        tracing::debug!(drop_reason = "malformed_udp", packet_len = packet.len(), proto, udp_len, "packet rejected");
         return None;
     }
     let payload = &packet[udp_start + 8..udp_start + udp_len];
