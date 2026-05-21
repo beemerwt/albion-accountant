@@ -20,7 +20,6 @@ fn format_host_filter_term(host: &str) -> String {
     format!("host {host}")
 }
 
-
 pub fn list_interfaces() -> Result<Vec<String>> {
     Ok(pcap::Device::list()?
         .into_iter()
@@ -86,6 +85,11 @@ pub fn build_filter_expression(
             format!("({hosts_expr}) and ({port_expr})")
         }
     }
+}
+
+pub fn open_capture_file(path: &Path) -> Result<pcap::Capture<pcap::Offline>> {
+    pcap::Capture::from_file(path)
+        .with_context(|| format!("failed to open capture file {}", path.display()))
 }
 
 pub fn open_capture_handle(

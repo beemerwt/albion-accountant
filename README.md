@@ -63,6 +63,7 @@ If you do not see transactions, verify these capture prerequisites:
 ```bash
 cargo run -- --list-interfaces
 cargo run -- --dry-run --interface eth0
+cargo run -- --pcap-file ./captures/sample.pcapng
 cargo run -- --interface eth0
 ```
 

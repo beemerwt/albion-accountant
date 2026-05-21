@@ -164,6 +164,192 @@ async fn main() -> Result<()> {
 
     let config = Config::load()?;
 
+    if let Some(pcap_file) = &config.pcap_file {
+        let mut cap = capture::pcap_capture::open_capture_file(pcap_file)?;
+        let link_type = cap.get_datalink().0;
+        let mut processor = albion::session::PacketProcessor::new(Duration::from_secs(90));
+        let mut counters = PipelineCounters::default();
+        while let Ok(packet) = cap.next_packet() {
+            if packet.data.is_empty() {
+                continue;
+            }
+            let packet = packet.data;
+            counters.packets_seen = counters.packets_seen.wrapping_add(1);
+            if counters.packets_seen % 512 == 0 {
+                processor.cleanup_stale_sessions();
+            }
+            let udp = albion::decoder::extract_udp_payload(albion::decoder::CapturePacket {
+                link_type,
+                packet,
+            });
+            let (udp_payload, src_ip, src_port, dst_ip, dst_port, protocol) = match udp {
+                Ok(t) => (
+                    t.payload, t.src_ip, t.src_port, t.dst_ip, t.dst_port, t.protocol,
+                ),
+                Err(reason) => {
+                    match reason {
+                        albion::decoder::UdpExtractDropReason::NonUdp => {
+                            counters.non_udp_drops = counters.non_udp_drops.wrapping_add(1);
+                        }
+                        albion::decoder::UdpExtractDropReason::UnsupportedEtherType => {
+                            counters.non_ipv4_drops = counters.non_ipv4_drops.wrapping_add(1);
+                        }
+                        _ => {
+                            counters.malformed_header_drops =
+                                counters.malformed_header_drops.wrapping_add(1);
+                        }
+                    }
+                    continue;
+                }
+            };
+            counters.udp_payloads_accepted = counters.udp_payloads_accepted.wrapping_add(1);
+            let session_key = albion::session::SessionKey {
+                src_ip,
+                src_port,
+                dst_ip,
+                dst_port,
+                protocol,
+            };
+            let outcome = processor.ingest_packet(session_key, udp_payload);
+            for message in &outcome.messages {
+                match albion::decoder::probe_message(message) {
+                    albion::decoder::DecodeProbe::EventDecoded {
+                        code,
+                        encrypted_like,
+                        ..
+                    } => {
+                        if ids::MARKET_EVENT_CODES.contains(&code) {
+                            counters.successful_decodes =
+                                counters.successful_decodes.wrapping_add(1);
+                        }
+                        if encrypted_like {
+                            counters.encrypted_like_payloads_seen =
+                                counters.encrypted_like_payloads_seen.wrapping_add(1);
+                        }
+                    }
+                    albion::decoder::DecodeProbe::OperationDecoded {
+                        op_code,
+                        encrypted_like,
+                        ..
+                    } => {
+                        if ids::MARKET_OPERATION_CODES.contains(&op_code) {
+                            counters.successful_decodes =
+                                counters.successful_decodes.wrapping_add(1);
+                        }
+                        if encrypted_like {
+                            counters.encrypted_like_payloads_seen =
+                                counters.encrypted_like_payloads_seen.wrapping_add(1);
+                        }
+                    }
+                    albion::decoder::DecodeProbe::UnsupportedCommandType {
+                        message_type,
+                        encrypted_like,
+                        ..
+                    } => {
+                        counters.unsupported_command_types =
+                            counters.unsupported_command_types.wrapping_add(1);
+                        if message_type == "unknown" {
+                            counters.unknown_message_types =
+                                counters.unknown_message_types.wrapping_add(1);
+                        }
+                        if encrypted_like {
+                            counters.encrypted_like_payloads_seen =
+                                counters.encrypted_like_payloads_seen.wrapping_add(1);
+                        }
+                    }
+                    albion::decoder::DecodeProbe::EventDecodeFailed => {
+                        counters.event_decode_failures =
+                            counters.event_decode_failures.wrapping_add(1);
+                    }
+                    albion::decoder::DecodeProbe::OperationDecodeFailed => {
+                        counters.operation_decode_failures =
+                            counters.operation_decode_failures.wrapping_add(1);
+                    }
+                }
+            }
+            for diag in &outcome.diagnostics {
+                match diag.command_kind {
+                    "reliable" => {
+                        counters.reliable_commands_seen =
+                            counters.reliable_commands_seen.wrapping_add(1)
+                    }
+                    "unreliable" => {
+                        counters.unreliable_commands_seen =
+                            counters.unreliable_commands_seen.wrapping_add(1)
+                    }
+                    "fragment" => {
+                        counters.fragment_commands_seen =
+                            counters.fragment_commands_seen.wrapping_add(1)
+                    }
+                    "disconnect" => {
+                        counters.disconnect_commands_seen =
+                            counters.disconnect_commands_seen.wrapping_add(1)
+                    }
+                    _ => {}
+                }
+            }
+            counters.small_gap_advances = counters
+                .small_gap_advances
+                .wrapping_add(outcome.summary.small_gap_advances);
+            counters.large_gap_resyncs = counters
+                .large_gap_resyncs
+                .wrapping_add(outcome.summary.large_gap_resyncs);
+            counters.duplicate_sequences_suppressed = counters
+                .duplicate_sequences_suppressed
+                .wrapping_add(outcome.summary.duplicate_sequences_suppressed);
+            counters.pending_queue_drops = counters
+                .pending_queue_drops
+                .wrapping_add(outcome.summary.pending_queue_drops);
+            counters.fragment_buffered_packets = counters
+                .fragment_buffered_packets
+                .wrapping_add(outcome.summary.fragment_buffered_packets);
+
+            for txn in albion::decoder::extract_market_transactions(&outcome.messages) {
+                println!(
+                    "{} | {} | {} | {} | {}",
+                    txn.location, txn.item, txn.quantity, txn.per_item_cost, txn.total_cost
+                );
+                counters.mapped_transactions_emitted =
+                    counters.mapped_transactions_emitted.wrapping_add(1);
+            }
+        }
+        info!(
+            interface = "pcap_file",
+            packets_seen = counters.packets_seen,
+            non_ipv4_drops = counters.non_ipv4_drops,
+            non_udp_drops = counters.non_udp_drops,
+            malformed_header_drops = counters.malformed_header_drops,
+            udp_payloads_accepted = counters.udp_payloads_accepted,
+            frame_parse_incomplete = counters.frame_parse_incomplete,
+            frame_parse_invalid = counters.frame_parse_invalid,
+            command_envelope_decode_errors = counters.command_envelope_decode_errors,
+            unsupported_command_types = counters.unsupported_command_types,
+            event_decode_failures = counters.event_decode_failures,
+            operation_decode_failures = counters.operation_decode_failures,
+            successful_decodes = counters.successful_decodes,
+            mapped_transactions_emitted = counters.mapped_transactions_emitted,
+            reliable_commands_seen = counters.reliable_commands_seen,
+            unreliable_commands_seen = counters.unreliable_commands_seen,
+            fragment_commands_seen = counters.fragment_commands_seen,
+            disconnect_commands_seen = counters.disconnect_commands_seen,
+            unknown_message_types = counters.unknown_message_types,
+            encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen,
+            small_gap_advances = counters.small_gap_advances,
+            large_gap_resyncs = counters.large_gap_resyncs,
+            duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed,
+            pending_queue_drops = counters.pending_queue_drops,
+            fragment_buffered_packets = counters.fragment_buffered_packets,
+            non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops),
+            non_udp_drop_pct = counters.pct(counters.non_udp_drops),
+            malformed_drop_pct = counters.pct(counters.malformed_header_drops),
+            accepted_udp_pct = counters.pct(counters.udp_payloads_accepted),
+            decode_success_pct = counters.pct(counters.successful_decodes),
+            mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted),
+            "decoder pipeline summary"
+        );
+        return Ok(());
+    }
+
     if config.list_interfaces {
         for name in capture::pcap_capture::list_interfaces()? {
             println!("{name}");
