@@ -125,11 +125,6 @@ fn decoded_response_from_map(
     })
 }
 
-pub fn decode_transaction(packet: &[u8]) -> Option<MarketTransaction> {
-    let messages = decode_packet(packet);
-    extract_market_transactions(&messages).into_iter().next()
-}
-
 pub fn extract_udp_payload_ipv4(
     packet: &[u8],
 ) -> Option<(&[u8], std::net::IpAddr, u16, std::net::IpAddr, u16, u8)> {
@@ -189,7 +184,8 @@ mod tests {
         let payload = build_event_payload("Martlock", "T4_BAG", 3, 1250);
         let packet = build_framed_packet(payload);
 
-        let tx_opt = decode_transaction(&packet);
+        let messages = decode_packet(&packet);
+        let tx_opt = extract_market_transactions(&messages).into_iter().next();
         assert!(
             tx_opt.is_some(),
             "expected decoded transaction for framed event packet (command_type={:?}, event_code={}, payload_keys={:?})",
