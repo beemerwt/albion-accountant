@@ -94,6 +94,30 @@ fn mapping_table_supported_opcodes_require_expected_fields() {
     }
 }
 
+#[test]
+fn fixture_metadata_covers_all_supported_event_and_operation_codes() {
+    let metadata = load_json_fixture("market_flow_fixture_metadata.json");
+    let fixtures = metadata["fixtures"].as_array().expect("fixtures array");
+
+    for op_code in ids::MARKET_OPERATION_CODES {
+        assert!(
+            fixtures.iter().any(|f| {
+                f["kind"] == "operation" && f["code"].as_u64() == Some(u64::from(*op_code))
+            }),
+            "missing fixture metadata for operation code {op_code}"
+        );
+    }
+
+    for event_code in ids::MARKET_EVENT_CODES {
+        assert!(
+            fixtures.iter().any(|f| {
+                f["kind"] == "event" && f["code"].as_u64() == Some(u64::from(*event_code))
+            }),
+            "missing fixture metadata for event code {event_code}"
+        );
+    }
+}
+
 use serde_json::{Map, Value};
 use std::{fs, path::PathBuf};
 fn load_json_fixture(name: &str) -> Value {

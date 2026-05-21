@@ -1,0 +1,10 @@
+{
+  "source_flow": "notification",
+  "event_code": 183,
+  "params": {
+    "LocationId": "Bridgewatch",
+    "ItemTypeId": "T5_BAG",
+    "Amount": 2,
+    "UnitPriceSilver": 1000
+  }
+}
