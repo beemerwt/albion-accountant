@@ -110,42 +110,45 @@ async fn main() -> Result<()> {
                         if counters.packets_seen % 512 == 0 {
                             processor.cleanup_stale_sessions();
                         }
-                        let Some((udp_payload, src_ip, src_port, dst_ip, dst_port, protocol)) =
-                            albion::decoder::extract_udp_payload_ipv4(packet)
-                        else {
-                            if packet.len() < 14 {
-                                counters.malformed_header_drops =
-                                    counters.malformed_header_drops.wrapping_add(1);
-                                if PipelineCounters::should_sample(counters.malformed_header_drops)
-                                {
-                                    debug!(drop_reason = "malformed_eth", interface = %interface, packet_len = packet.len(), "packet rejected");
-                                }
-                            } else {
-                                let ether_type = u16::from_be_bytes([packet[12], packet[13]]);
-                                if ether_type != 0x0800 {
-                                    counters.non_ipv4_drops =
-                                        counters.non_ipv4_drops.wrapping_add(1);
-                                    if PipelineCounters::should_sample(counters.non_ipv4_drops) {
-                                        debug!(drop_reason = "non_ipv4", interface = %interface, packet_len = packet.len(), ether_type, "packet rejected");
-                                    }
-                                } else if packet.len() < 34 {
-                                    counters.malformed_header_drops =
-                                        counters.malformed_header_drops.wrapping_add(1);
-                                } else {
-                                    let proto = packet[23];
-                                    if proto != 17 {
+                        let udp =
+                            albion::decoder::extract_udp_payload(albion::decoder::CapturePacket {
+                                link_type: cap.get_datalink().0,
+                                packet,
+                            });
+                        let (udp_payload, src_ip, src_port, dst_ip, dst_port, protocol) = match udp
+                        {
+                            Ok(t) => (
+                                t.payload, t.src_ip, t.src_port, t.dst_ip, t.dst_port, t.protocol,
+                            ),
+                            Err(reason) => {
+                                match reason {
+                                    albion::decoder::UdpExtractDropReason::NonUdp => {
                                         counters.non_udp_drops =
                                             counters.non_udp_drops.wrapping_add(1);
                                         if PipelineCounters::should_sample(counters.non_udp_drops) {
-                                            debug!(drop_reason = "non_udp", interface = %interface, packet_len = packet.len(), ether_type, proto, "packet rejected");
+                                            debug!(interface = %interface, ?reason, "packet rejected");
                                         }
-                                    } else {
+                                    }
+                                    albion::decoder::UdpExtractDropReason::UnsupportedEtherType => {
+                                        counters.non_ipv4_drops =
+                                            counters.non_ipv4_drops.wrapping_add(1);
+                                        if PipelineCounters::should_sample(counters.non_ipv4_drops)
+                                        {
+                                            debug!(interface = %interface, ?reason, "packet rejected");
+                                        }
+                                    }
+                                    _ => {
                                         counters.malformed_header_drops =
                                             counters.malformed_header_drops.wrapping_add(1);
+                                        if PipelineCounters::should_sample(
+                                            counters.malformed_header_drops,
+                                        ) {
+                                            debug!(interface = %interface, ?reason, "packet rejected");
+                                        }
                                     }
                                 }
+                                continue;
                             }
-                            continue;
                         };
                         counters.udp_payloads_accepted =
                             counters.udp_payloads_accepted.wrapping_add(1);

@@ -1,7 +1,7 @@
 mod support;
 
 use albion_accountant::albion::{
-    decoder::{decode_packet, extract_market_transactions, extract_udp_payload_ipv4},
+    decoder::{CapturePacket, decode_packet, extract_market_transactions, extract_udp_payload},
     market_mapper::{DecodedOperationResponse, map_response_to_transaction},
     protocol::{
         commands::{AlbionCommandType, decode_command_envelope},
@@ -32,8 +32,19 @@ fn albion_live_fixtures_cover_full_market_pipeline() {
         let raw_frame = load_hex_fixture(&format!("albion_live/{frame_fixture}"));
         let expected = load_json_fixture(&format!("albion_live/{expected_fixture}"));
 
-        let (udp_payload, src_ip, src_port, dst_ip, dst_port, proto) =
-            extract_udp_payload_ipv4(&raw_frame).expect("valid ipv4/udp packet");
+        let tuple = extract_udp_payload(CapturePacket {
+            link_type: 1,
+            packet: &raw_frame,
+        })
+        .expect("valid ipv4/udp packet");
+        let (udp_payload, src_ip, src_port, dst_ip, dst_port, proto) = (
+            tuple.payload,
+            tuple.src_ip,
+            tuple.src_port,
+            tuple.dst_ip,
+            tuple.dst_port,
+            tuple.protocol,
+        );
         assert_transport(&expected, src_ip, src_port, dst_ip, dst_port, proto);
 
         let frames = parse_udp_payload(udp_payload).expect("transport frame parses");
