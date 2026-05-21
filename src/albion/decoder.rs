@@ -104,9 +104,9 @@ fn decoded_response_from_map(
     map: &std::collections::BTreeMap<String, ProtocolValue>,
 ) -> Option<DecodedOperationResponse> {
     let op_code = match map.get(ids::KEY_OP_CODE)? {
-        ProtocolValue::Byte(v) => *v,
-        ProtocolValue::Short(v) => u8::try_from(*v).ok()?,
-        ProtocolValue::Int(v) => u8::try_from(*v).ok()?,
+        ProtocolValue::Byte(v) => u16::from(*v),
+        ProtocolValue::Short(v) => u16::try_from(*v).ok()?,
+        ProtocolValue::Int(v) => u16::try_from(*v).ok()?,
         _ => return None,
     };
     let return_code = match map.get(ids::KEY_RETURN_CODE)? {

@@ -10,7 +10,7 @@ pub struct DecodedEvent {
 
 #[derive(Debug, Clone)]
 pub struct DecodedOperationResponse {
-    pub op_code: u8,
+    pub op_code: u16,
     pub return_code: i16,
     pub params: BTreeMap<String, ProtocolValue>,
 }
@@ -149,7 +149,7 @@ mod tests {
         assert!(map_response_to_transaction(&supported).is_some());
 
         let unsupported = DecodedOperationResponse {
-            op_code: 0xff,
+            op_code: 0xffff,
             return_code: 0,
             params: valid_market_params(),
         };
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn maps_supported_event_code_to_market_transaction() {
         let event = DecodedEvent {
-            code: 0x2a,
+            code: 58,
             params: valid_market_params(),
         };
 
