@@ -148,18 +148,24 @@ impl PacketProcessor {
     }
 }
 
+/// Flushes reliable messages for a channel in sequence order.
+///
+/// Startup/bootstrap policy: when a channel is first observed, we initialize
+/// `expected_seq` to one less than the first seen sequence and **do not emit**
+/// that first message immediately. The message remains pending until either:
+/// 1) the missing lower sequence arrives and normal in-order emission can proceed, or
+/// 2) gap recovery advances the cursor to the smallest pending sequence.
+///
+/// Gap handling: if the next expected sequence is missing and the gap to the
+/// smallest pending sequence is within `MAX_SEQUENCE_GAP`, we advance to recover
+/// and emit from the smallest pending sequence. If the gap is larger than
+/// `MAX_SEQUENCE_GAP`, the channel is resynchronized and pending data is dropped.
 fn flush_channel(
     session_key: &SessionKey,
     channel_id: u8,
     chan: &mut ChannelState,
     out: &mut Vec<PhotonMessage>,
 ) {
-    // Policy: for a brand-new channel, buffer the first seen sequence and set
-    // `expected_seq` to `first_seen - 1` (wrapping). This intentionally waits for
-    // a potentially missing lower sequence before releasing buffered messages.
-    // If that lower sequence does not arrive, small-gap advance logic eventually
-    // moves `expected_seq` forward and emits in-order from the earliest pending
-    // sequence; large gaps still trigger resynchronization.
     if chan.expected_seq.is_none() {
         if let Some((&seq, _)) = chan.pending.iter().next() {
             chan.expected_seq = Some(seq.wrapping_sub(1));
@@ -167,24 +173,25 @@ fn flush_channel(
     }
 
     while let Some(expected) = chan.expected_seq {
-        if let Some(msg) = chan.pending.remove(&expected) {
+        let next = expected.wrapping_add(1);
+        if let Some(msg) = chan.pending.remove(&next) {
             out.push(msg);
-            chan.expected_seq = Some(expected.wrapping_add(1));
+            chan.expected_seq = Some(next);
             chan.last_progress = Some(Instant::now());
             continue;
         }
 
         if let Some((&smallest, _)) = chan.pending.iter().next() {
-            let gap = smallest.wrapping_sub(expected);
+            let gap = smallest.wrapping_sub(next);
             if gap > 0 && gap <= MAX_SEQUENCE_GAP {
-                warn!(session_key = ?session_key, channel_id = channel_id, seq = expected, next_seq = smallest, gap = gap, "missing sequence in small gap; advancing expected seq");
-                chan.expected_seq = Some(smallest);
+                warn!(session_key = ?session_key, channel_id = channel_id, seq = next, next_seq = smallest, gap = gap, "missing sequence in small gap; advancing expected seq");
+                chan.expected_seq = Some(smallest.wrapping_sub(1));
                 continue;
             }
             if gap > MAX_SEQUENCE_GAP {
-                warn!(session_key = ?session_key, channel_id = channel_id, seq = expected, next_seq = smallest, gap = gap, "large sequence gap detected; resyncing channel state");
+                warn!(session_key = ?session_key, channel_id = channel_id, seq = next, next_seq = smallest, gap = gap, "large sequence gap detected; resyncing channel state");
                 chan.pending.clear();
-                chan.expected_seq = Some(smallest);
+                chan.expected_seq = Some(smallest.wrapping_sub(1));
                 break;
             }
         }
@@ -262,16 +269,10 @@ mod tests {
     }
 
     #[test]
-    fn first_packet_high_seq_is_buffered_until_gap_logic_advances() {
+    fn new_channel_bootstrap_policy_buffers_first_seen_sequence() {
         let mut p = PacketProcessor::new(Duration::from_secs(60));
         let first = p.ingest_packet(key(), &frame(1, 900, b"high"));
-        assert_eq!(
-            first
-                .iter()
-                .map(|m| m.reliable_sequence)
-                .collect::<Vec<_>>(),
-            vec![900]
-        );
+        assert!(first.is_empty());
     }
 
     #[test]
@@ -279,12 +280,10 @@ mod tests {
         let mut p = PacketProcessor::new(Duration::from_secs(60));
         let first = p.ingest_packet(key(), &frame(1, 10, b"ten"));
         assert!(first.is_empty());
+
         let second = p.ingest_packet(key(), &frame(1, 11, b"eleven"));
         assert_eq!(
-            second
-                .iter()
-                .map(|m| m.reliable_sequence)
-                .collect::<Vec<_>>(),
+            second.iter().map(|m| m.reliable_sequence).collect::<Vec<_>>(),
             vec![10, 11]
         );
     }
