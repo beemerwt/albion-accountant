@@ -27,14 +27,20 @@ pub enum DecodeProbe {
     EventDecoded {
         code: u16,
         key_count: usize,
+        message_type: &'static str,
+        encrypted_like: bool,
     },
     OperationDecoded {
         op_code: u16,
         return_code: i16,
         key_count: usize,
+        message_type: &'static str,
+        encrypted_like: bool,
     },
     UnsupportedCommandType {
         command_type: u16,
+        message_type: &'static str,
+        encrypted_like: bool,
     },
     EventDecodeFailed,
     OperationDecodeFailed,
@@ -70,6 +76,17 @@ fn map_message_to_transaction(message: &PhotonMessage) -> Option<MarketTransacti
                 "ignoring unsupported command type"
             );
         }
+        AlbionCommandType::Reliable
+        | AlbionCommandType::Unreliable
+        | AlbionCommandType::Fragment
+        | AlbionCommandType::Disconnect => {
+            tracing::debug!(
+                command_type = message.command_type,
+                channel = message.channel,
+                seq = message.reliable_sequence,
+                "ignoring non-decoded transport command type"
+            );
+        }
     }
     None
 }
@@ -87,7 +104,11 @@ fn map_decoded_payload_to_transaction(
             let response = decoded_response_from_map(map)?;
             map_response_to_transaction(&response)
         }
-        AlbionCommandType::Unsupported(_) => None,
+        AlbionCommandType::Reliable
+        | AlbionCommandType::Unreliable
+        | AlbionCommandType::Fragment
+        | AlbionCommandType::Disconnect
+        | AlbionCommandType::Unsupported(_) => None,
     }
 }
 
@@ -144,6 +165,8 @@ pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
             DecodeProbe::EventDecoded {
                 code: event.code,
                 key_count: event.params.len(),
+                message_type: "event",
+                encrypted_like: payload_looks_encrypted(&message.payload),
             }
         }
         AlbionCommandType::OperationResponse => {
@@ -157,12 +180,31 @@ pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
                 op_code: response.op_code,
                 return_code: response.return_code,
                 key_count: response.params.len(),
+                message_type: "response",
+                encrypted_like: payload_looks_encrypted(&message.payload),
             }
         }
-        AlbionCommandType::Unsupported(command_type) => {
-            DecodeProbe::UnsupportedCommandType { command_type }
-        }
+        AlbionCommandType::Unsupported(command_type) => DecodeProbe::UnsupportedCommandType {
+            command_type,
+            message_type: "unknown",
+            encrypted_like: payload_looks_encrypted(&message.payload),
+        },
+        AlbionCommandType::Reliable
+        | AlbionCommandType::Unreliable
+        | AlbionCommandType::Fragment
+        | AlbionCommandType::Disconnect => DecodeProbe::UnsupportedCommandType {
+            command_type: message.command_type,
+            message_type: "request",
+            encrypted_like: payload_looks_encrypted(&message.payload),
+        },
     }
+}
+
+fn payload_looks_encrypted(payload: &[u8]) -> bool {
+    payload
+        .first()
+        .map(|b| matches!(*b, 0xF3 | 0xFD | 0x7E))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

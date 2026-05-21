@@ -8,7 +8,7 @@ use std::{
 use tracing::warn;
 
 use super::protocol::{
-    commands::{PhotonMessage, decode_command_envelope},
+    commands::{AlbionCommandType, PhotonMessage, decode_command_envelope},
     transport::{FrameParseError, parse_udp_payload_incremental},
 };
 
@@ -66,6 +66,27 @@ pub struct DecodeFailureArtifact {
 pub struct IngestOutcome {
     pub messages: Vec<PhotonMessage>,
     pub failures: Vec<DecodeFailureArtifact>,
+    pub diagnostics: Vec<CommandDiagnostic>,
+    pub summary: IngestSummary,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IngestSummary {
+    pub fragment_buffered_packets: usize,
+    pub duplicate_sequences_suppressed: usize,
+    pub pending_queue_drops: usize,
+    pub small_gap_advances: usize,
+    pub large_gap_resyncs: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandDiagnostic {
+    pub command_type: u16,
+    pub command_kind: &'static str,
+    pub channel: u8,
+    pub reliable_sequence: u16,
+    pub payload_length: u16,
+    pub has_encrypted_like_prefix: bool,
 }
 
 impl Deref for IngestOutcome {
@@ -120,6 +141,8 @@ impl PacketProcessor {
             Err(FrameParseError::Incomplete { .. }) => {
                 state.fragment_buffer = merged;
                 state.last_seen = now;
+                outcome.summary.fragment_buffered_packets =
+                    outcome.summary.fragment_buffered_packets.wrapping_add(1);
                 return outcome;
             }
             Err(FrameParseError::Invalid(err)) => {
@@ -149,15 +172,35 @@ impl PacketProcessor {
             let chan = state.channels.entry(msg.channel).or_default();
             if chan.pending.contains_key(&msg.reliable_sequence) {
                 warn!(session_key = ?session_key, channel_id = msg.channel, seq = msg.reliable_sequence, "duplicate sequence suppressed");
+                outcome.summary.duplicate_sequences_suppressed = outcome
+                    .summary
+                    .duplicate_sequences_suppressed
+                    .wrapping_add(1);
                 continue;
             }
             if chan.pending.len() >= MAX_PENDING_PER_CHANNEL {
                 warn!(session_key = ?session_key, channel_id = msg.channel, seq = msg.reliable_sequence, "pending queue full; dropping out-of-order packet");
+                outcome.summary.pending_queue_drops =
+                    outcome.summary.pending_queue_drops.wrapping_add(1);
                 continue;
             }
+            outcome.diagnostics.push(CommandDiagnostic {
+                command_type: msg.command_type,
+                command_kind: AlbionCommandType::from(msg.command_type).as_str(),
+                channel: msg.channel,
+                reliable_sequence: msg.reliable_sequence,
+                payload_length: msg.payload_length,
+                has_encrypted_like_prefix: payload_looks_encrypted(&msg.payload),
+            });
             let channel_id = msg.channel;
             chan.pending.insert(msg.reliable_sequence, msg);
-            flush_channel(&session_key, channel_id, chan, &mut outcome.messages);
+            flush_channel(
+                &session_key,
+                channel_id,
+                chan,
+                &mut outcome.messages,
+                &mut outcome.summary,
+            );
         }
 
         outcome
@@ -192,6 +235,7 @@ fn flush_channel(
     channel_id: u8,
     chan: &mut ChannelState,
     out: &mut Vec<PhotonMessage>,
+    summary: &mut IngestSummary,
 ) {
     if chan.expected_seq.is_none() {
         if let Some((&seq, _)) = chan.pending.iter().next() {
@@ -213,17 +257,26 @@ fn flush_channel(
             if gap > 0 && gap <= MAX_SEQUENCE_GAP {
                 warn!(session_key = ?session_key, channel_id = channel_id, seq = next, next_seq = smallest, gap = gap, "missing sequence in small gap; advancing expected seq");
                 chan.expected_seq = Some(smallest.wrapping_sub(1));
+                summary.small_gap_advances = summary.small_gap_advances.wrapping_add(1);
                 continue;
             }
             if gap > MAX_SEQUENCE_GAP {
                 warn!(session_key = ?session_key, channel_id = channel_id, seq = next, next_seq = smallest, gap = gap, "large sequence gap detected; resyncing channel state");
                 chan.pending.clear();
                 chan.expected_seq = Some(smallest.wrapping_sub(1));
+                summary.large_gap_resyncs = summary.large_gap_resyncs.wrapping_add(1);
                 break;
             }
         }
         break;
     }
+}
+
+fn payload_looks_encrypted(payload: &[u8]) -> bool {
+    payload
+        .first()
+        .map(|b| matches!(*b, 0xF3 | 0xFD | 0x7E))
+        .unwrap_or(false)
 }
 
 fn cleanup_stale_channel_pending(
