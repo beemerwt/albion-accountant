@@ -3,9 +3,16 @@ mod capture;
 mod config;
 mod sheets;
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Result;
+use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -29,6 +36,91 @@ struct PipelineCounters {
     operation_decode_failures: usize,
     successful_decodes: usize,
     mapped_transactions_emitted: usize,
+}
+
+struct DebugTap {
+    dir: PathBuf,
+    max_files: usize,
+    sample_rate: usize,
+    counter: usize,
+}
+
+impl DebugTap {
+    fn new(dir: PathBuf, max_files: usize, sample_rate: usize) -> Result<Self> {
+        fs::create_dir_all(&dir)?;
+        Ok(Self {
+            dir,
+            max_files,
+            sample_rate: sample_rate.max(1),
+            counter: 0,
+        })
+    }
+
+    fn record(
+        &mut self,
+        interface: &str,
+        session_key: &albion::session::SessionKey,
+        stage: &str,
+        error: &str,
+        payload: &[u8],
+    ) {
+        self.counter = self.counter.wrapping_add(1);
+        if !self.counter.is_multiple_of(self.sample_rate) {
+            return;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let id = format!("{now}-{}", self.counter);
+        let payload_limit = 8192usize;
+        let bounded = &payload[..payload.len().min(payload_limit)];
+        let snippet_limit = 96usize;
+        let snippet = &payload[..payload.len().min(snippet_limit)];
+        let hex_full = bounded
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let hex_snippet = snippet
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let meta = json!({
+            "timestamp_unix_ms": now,
+            "interface": interface,
+            "session_key": {
+                "src_ip": session_key.src_ip.to_string(),
+                "src_port": session_key.src_port,
+                "dst_ip": session_key.dst_ip.to_string(),
+                "dst_port": session_key.dst_port,
+                "protocol": session_key.protocol,
+            },
+            "stage": stage,
+            "error": error,
+            "payload_len": payload.len(),
+            "payload_bytes_written": bounded.len(),
+            "payload_hex_snippet": hex_snippet,
+            "hex_file": format!("{id}.hex"),
+        });
+        let _ = fs::write(self.dir.join(format!("{id}.json")), meta.to_string());
+        let _ = fs::write(self.dir.join(format!("{id}.hex")), hex_full);
+        self.prune_old();
+    }
+
+    fn prune_old(&self) {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut files: Vec<_> = entries.flatten().collect();
+        if files.len() <= self.max_files {
+            return;
+        }
+        files.sort_by_key(|entry| entry.file_name());
+        let remove_n = files.len().saturating_sub(self.max_files);
+        for entry in files.into_iter().take(remove_n) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 impl PipelineCounters {
@@ -78,6 +170,15 @@ async fn main() -> Result<()> {
     info!(interfaces = ?interfaces, "selected capture interfaces");
 
     let (tx, mut rx) = mpsc::channel::<MarketTransaction>(256);
+    let debug_tap = if let Some(dir) = &config.debug_tap_dir {
+        Some(Arc::new(Mutex::new(DebugTap::new(
+            dir.clone(),
+            config.debug_tap_max_files,
+            config.debug_tap_sample_rate,
+        )?)))
+    } else {
+        None
+    };
     let mut active_interfaces = 0usize;
     for interface in interfaces {
         let filter_expr = capture::pcap_capture::build_filter_expression(
@@ -90,7 +191,9 @@ async fn main() -> Result<()> {
             Ok(mut cap) => {
                 active_interfaces = active_interfaces.wrapping_add(1);
                 let capture_tx = tx.clone();
+                let debug_tap = debug_tap.clone();
                 std::thread::spawn(move || {
+                    let link_type = cap.get_datalink().0;
                     let mut processor =
                         albion::session::PacketProcessor::new(Duration::from_secs(90));
                     let mut counters = PipelineCounters::default();
@@ -112,7 +215,7 @@ async fn main() -> Result<()> {
                         }
                         let udp =
                             albion::decoder::extract_udp_payload(albion::decoder::CapturePacket {
-                                link_type: cap.get_datalink().0,
+                                link_type,
                                 packet,
                             });
                         let (udp_payload, src_ip, src_port, dst_ip, dst_port, protocol) = match udp
@@ -159,7 +262,21 @@ async fn main() -> Result<()> {
                             dst_port,
                             protocol,
                         };
-                        let messages = processor.ingest_packet(session_key, udp_payload);
+                        let outcome = processor.ingest_packet(session_key.clone(), udp_payload);
+                        if let Some(tap) = &debug_tap {
+                            for failure in &outcome.failures {
+                                if let Ok(mut guard) = tap.lock() {
+                                    guard.record(
+                                        &interface,
+                                        &session_key,
+                                        failure.stage,
+                                        &failure.error,
+                                        &failure.payload,
+                                    );
+                                }
+                            }
+                        }
+                        let messages = outcome.messages;
                         for message in &messages {
                             match albion::decoder::probe_message(message) {
                                 albion::decoder::DecodeProbe::EventDecoded { code, key_count } => {
@@ -189,6 +306,17 @@ async fn main() -> Result<()> {
                                         counters.unsupported_command_types,
                                     ) {
                                         debug!(drop_reason = "unsupported_command_type", interface = %interface, command_type, "unsupported command type observed");
+                                    }
+                                    if let Some(tap) = &debug_tap
+                                        && let Ok(mut guard) = tap.lock()
+                                    {
+                                        guard.record(
+                                            &interface,
+                                            &session_key,
+                                            "unsupported_command",
+                                            &format!("unsupported command type {command_type}"),
+                                            &message.payload,
+                                        );
                                     }
                                 }
                                 albion::decoder::DecodeProbe::EventDecodeFailed => {

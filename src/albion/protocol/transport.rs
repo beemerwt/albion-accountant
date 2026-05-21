@@ -64,6 +64,20 @@ pub fn parse_udp_payload_incremental(
     Ok(out)
 }
 
+pub fn parse_udp_payload(payload: &[u8]) -> Result<Vec<FramedPayload>, DecodeError> {
+    parse_udp_payload_incremental(payload).map_err(|err| match err {
+        FrameParseError::Incomplete {
+            offset,
+            needed,
+            remaining,
+        } => DecodeError::Transport {
+            offset,
+            reason: format!("incomplete frame: needed {needed} bytes, only {remaining} remain"),
+        },
+        FrameParseError::Invalid(inner) => inner,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
