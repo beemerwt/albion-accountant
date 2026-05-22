@@ -50,6 +50,8 @@ pub enum DecodeProbe {
     OperationDecodeFailed,
 }
 
+/// Returns only transactions confirmed by market operation responses
+/// after request/response correlation. Listing snapshots alone are never emitted.
 pub fn extract_market_transactions_stateful(
     correlator: &mut TradeCorrelator,
     messages: &[PhotonMessage],

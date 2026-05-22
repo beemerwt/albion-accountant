@@ -38,6 +38,7 @@ struct PipelineCounters {
     mapped_transactions_emitted: usize,
     stateless_transactions_emitted: usize,
     stateful_transactions_emitted: usize,
+    correlated_transactions_queued: usize,
     reliable_commands_seen: usize,
     unreliable_commands_seen: usize,
     fragment_commands_seen: usize,
@@ -333,6 +334,7 @@ async fn main() -> Result<()> {
             mapped_transactions_emitted = counters.mapped_transactions_emitted,
             stateless_transactions_emitted = counters.stateless_transactions_emitted,
             stateful_transactions_emitted = counters.stateful_transactions_emitted,
+            correlated_transactions_queued = counters.correlated_transactions_queued,
             reliable_commands_seen = counters.reliable_commands_seen,
             unreliable_commands_seen = counters.unreliable_commands_seen,
             fragment_commands_seen = counters.fragment_commands_seen,
@@ -607,11 +609,14 @@ async fn main() -> Result<()> {
                         for txn in stateful_txs {
                             counters.mapped_transactions_emitted =
                                 counters.mapped_transactions_emitted.wrapping_add(1);
-                            debug!(interface = %interface, ?txn, "decoded transaction event");
+                            counters.correlated_transactions_queued = counters
+                                .correlated_transactions_queued
+                                .wrapping_add(1);
+                            debug!(interface = %interface, ?txn, "decoded correlated transaction event");
                             let _ = capture_tx.blocking_send(txn);
                         }
                         if counters.packets_seen % 2048 == 0 {
-                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, stateless_transactions_emitted = counters.stateless_transactions_emitted, stateful_transactions_emitted = counters.stateful_transactions_emitted, reliable_commands_seen = counters.reliable_commands_seen, unreliable_commands_seen = counters.unreliable_commands_seen, fragment_commands_seen = counters.fragment_commands_seen, disconnect_commands_seen = counters.disconnect_commands_seen, unknown_message_types = counters.unknown_message_types, encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen, small_gap_advances = counters.small_gap_advances, large_gap_resyncs = counters.large_gap_resyncs, duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed, pending_queue_drops = counters.pending_queue_drops, fragment_buffered_packets = counters.fragment_buffered_packets, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), "decoder pipeline summary");
+                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, stateless_transactions_emitted = counters.stateless_transactions_emitted, stateful_transactions_emitted = counters.stateful_transactions_emitted, correlated_transactions_queued = counters.correlated_transactions_queued, reliable_commands_seen = counters.reliable_commands_seen, unreliable_commands_seen = counters.unreliable_commands_seen, fragment_commands_seen = counters.fragment_commands_seen, disconnect_commands_seen = counters.disconnect_commands_seen, unknown_message_types = counters.unknown_message_types, encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen, small_gap_advances = counters.small_gap_advances, large_gap_resyncs = counters.large_gap_resyncs, duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed, pending_queue_drops = counters.pending_queue_drops, fragment_buffered_packets = counters.fragment_buffered_packets, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), "decoder pipeline summary");
                         }
                     }
                 });
