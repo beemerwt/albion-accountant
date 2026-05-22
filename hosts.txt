@@ -1,6 +1,3 @@
 # Albion Online endpoints (seed list; can be overridden with --albion-hosts-file)
 # One endpoint per line (IPv4/IPv6 host literal, or CIDR such as 5.188.125.0/24)
-5.188.125.39
-5.188.125.40
-5.188.125.41
-5.188.125.42
+5.188.125.0/24
