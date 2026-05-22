@@ -153,6 +153,10 @@ impl TradeCorrelator {
         self.order_cache.len()
     }
 
+    pub fn has_cached_order(&self, order_id: u64) -> bool {
+        self.order_cache.iter().any(|o| o.order_id == order_id)
+    }
+
     fn push_pending(&mut self, pending: PendingTrade) {
         if self.pending.len() >= self.max_pending {
             self.pending.pop_front();
