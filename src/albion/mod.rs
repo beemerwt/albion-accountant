@@ -1,3 +1,4 @@
+pub mod correlator;
 pub mod decoder;
 pub mod event_codes;
 pub mod hosts;
