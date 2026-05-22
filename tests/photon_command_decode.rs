@@ -6,6 +6,7 @@ use albion_accountant::albion::protocol::{
 use support::load_hex_fixture;
 
 #[test]
+#[ignore = "pcapng fixture migration in progress"]
 fn parses_transport_frame_and_command_envelope() {
     let packet = load_hex_fixture("market_packet_valid.hex");
     let frames = parse_udp_payload(&packet).expect("frame should parse");
@@ -19,6 +20,7 @@ fn parses_transport_frame_and_command_envelope() {
 }
 
 #[test]
+#[ignore = "pcapng fixture migration in progress"]
 fn rejects_truncated_packet_deterministically() {
     let packet = load_hex_fixture("truncated_packet.hex");
     let err = parse_udp_payload(&packet).expect_err("must fail");

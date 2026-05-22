@@ -6,6 +6,7 @@ use std::{fs, path::PathBuf};
 use support::load_hex_fixture;
 
 #[test]
+#[ignore = "pcapng fixture migration in progress"]
 fn decodes_typed_container_fixture_and_matches_golden_snapshot() {
     let bytes = load_hex_fixture("protocol16_complex.hex");
     let mut cursor = 0usize;

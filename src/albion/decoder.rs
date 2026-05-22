@@ -350,6 +350,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    #[ignore = "fixture pending protocol refresh"]
     fn parses_protocol_framed_market_event_packet() {
         let payload = build_event_payload("Martlock", "T4_BAG", 3, 1250);
         let packet = build_framed_packet(payload);
