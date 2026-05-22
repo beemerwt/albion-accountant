@@ -8,7 +8,11 @@
 // market_mapper (and ids as needed), keyed by event code / operation code.
 
 use super::{
+    correlator::{MarketOrderCacheEntry, TradeCorrelator, TradeSide},
     ids,
+    market_decode::{
+        MarketRequestKind, MarketResponseKind, decode_market_request, decode_market_response,
+    },
     market_mapper::{
         DecodedEvent, DecodedOperationResponse, map_event_to_transaction,
         map_response_to_transaction,
@@ -44,6 +48,56 @@ pub enum DecodeProbe {
     },
     EventDecodeFailed,
     OperationDecodeFailed,
+}
+
+pub fn extract_market_transactions_stateful(
+    correlator: &mut TradeCorrelator,
+    messages: &[PhotonMessage],
+) -> Vec<MarketTransaction> {
+    let mut out = Vec::new();
+    for message in messages {
+        if let Some(response) = decode_market_response(message) {
+            match response.kind {
+                MarketResponseKind::AuctionGetOffers | MarketResponseKind::AuctionGetRequests => {
+                    correlator.observe_market_orders(response.orders.into_iter().map(|o| {
+                        MarketOrderCacheEntry {
+                            order_id: o.order_id,
+                            location: o.location_id,
+                            item_type_id: o.item_type_id,
+                            unit_price_silver: o.unit_price_silver,
+                            observed_at: std::time::Instant::now(),
+                        }
+                    }));
+                }
+                MarketResponseKind::AuctionBuyOffer => {
+                    if let Some(tx) = correlator.observe_buy_response(response.return_code == 0) {
+                        out.push(tx);
+                    }
+                }
+                MarketResponseKind::AuctionSellSpecificItemRequest
+                | MarketResponseKind::QuickSellAuctionSellAction => {
+                    if let Some(tx) = correlator.observe_sell_response(response.return_code == 0) {
+                        out.push(tx);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(request) = decode_market_request(message) {
+            let side = match request.kind {
+                MarketRequestKind::AuctionBuyOffer => TradeSide::Buy,
+                MarketRequestKind::AuctionSellSpecificItemRequest
+                | MarketRequestKind::QuickSellAuctionSellAction => TradeSide::Sell,
+            };
+            match side {
+                TradeSide::Buy => correlator.observe_buy_request(request.order_id, request.amount),
+                TradeSide::Sell => correlator.observe_sell_request(request.order_id, request.amount),
+            }
+        }
+    }
+    correlator.expire_old_state();
+    out
 }
 
 pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTransaction> {

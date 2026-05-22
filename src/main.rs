@@ -168,6 +168,7 @@ async fn main() -> Result<()> {
         let mut cap = capture::pcap_capture::open_capture_file(pcap_file)?;
         let link_type = cap.get_datalink().0;
         let mut processor = albion::session::PacketProcessor::new(Duration::from_secs(90));
+        let mut correlator = albion::correlator::TradeCorrelator::default();
         let mut counters = PipelineCounters::default();
         while let Ok(packet) = cap.next_packet() {
             if packet.data.is_empty() {
@@ -304,7 +305,7 @@ async fn main() -> Result<()> {
                 .fragment_buffered_packets
                 .wrapping_add(outcome.summary.fragment_buffered_packets);
 
-            for txn in albion::decoder::extract_market_transactions(&outcome.messages) {
+            for txn in albion::decoder::extract_market_transactions_stateful(&mut correlator, &outcome.messages) {
                 println!(
                     "{} | {} | {} | {} | {}",
                     txn.location, txn.item, txn.quantity, txn.per_item_cost, txn.total_cost
@@ -394,6 +395,7 @@ async fn main() -> Result<()> {
                     let mut processor =
                         albion::session::PacketProcessor::new(Duration::from_secs(90));
                     let mut counters = PipelineCounters::default();
+                    let mut correlator = albion::correlator::TradeCorrelator::default();
                     loop {
                         let packet = match cap.next_packet() {
                             Ok(packet) => packet,
@@ -588,7 +590,7 @@ async fn main() -> Result<()> {
                         counters.fragment_buffered_packets = counters
                             .fragment_buffered_packets
                             .wrapping_add(outcome.summary.fragment_buffered_packets);
-                        for txn in albion::decoder::extract_market_transactions(&messages) {
+                        for txn in albion::decoder::extract_market_transactions_stateful(&mut correlator, &messages) {
                             counters.mapped_transactions_emitted =
                                 counters.mapped_transactions_emitted.wrapping_add(1);
                             debug!(interface = %interface, ?txn, "decoded transaction event");
