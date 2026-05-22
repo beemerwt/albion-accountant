@@ -8,7 +8,11 @@
 // market_mapper (and ids as needed), keyed by event code / operation code.
 
 use super::{
+    correlator::{MarketOrderCacheEntry, TradeCorrelator, TradeSide},
     ids,
+    market_decode::{
+        MarketRequestKind, MarketResponseKind, decode_market_request, decode_market_response,
+    },
     market_mapper::{
         DecodedEvent, DecodedOperationResponse, map_event_to_transaction,
         map_response_to_transaction,
@@ -44,6 +48,79 @@ pub enum DecodeProbe {
     },
     EventDecodeFailed,
     OperationDecodeFailed,
+}
+
+/// Returns only transactions confirmed by market operation responses
+/// after request/response correlation. Listing snapshots alone are never emitted.
+pub fn extract_market_transactions_stateful(
+    correlator: &mut TradeCorrelator,
+    messages: &[PhotonMessage],
+) -> Vec<MarketTransaction> {
+    let mut out = Vec::new();
+    for message in messages {
+        if let Some(response) = decode_market_response(message) {
+            match response.kind {
+                MarketResponseKind::AuctionGetOffers | MarketResponseKind::AuctionGetRequests => {
+                    let order_count = response.orders.len();
+                    tracing::debug!(order_count, kind = ?response.kind, "market listing response observed");
+                    correlator.observe_market_orders(response.orders.into_iter().map(|o| {
+                        MarketOrderCacheEntry {
+                            order_id: o.order_id,
+                            location: o.location_id,
+                            item_type_id: o.item_type_id,
+                            unit_price_silver: o.unit_price_silver,
+                            observed_at: std::time::Instant::now(),
+                        }
+                    }));
+                }
+                MarketResponseKind::AuctionBuyOffer => {
+                    let success = response.return_code == 0;
+                    tracing::debug!(return_code = response.return_code, success, "market buy response observed");
+                    if let Some(tx) = correlator.observe_buy_response(success) {
+                        tracing::debug!(?tx, "market buy correlation finalized transaction");
+                        out.push(tx);
+                    } else {
+                        tracing::debug!(success, "market buy response did not finalize a transaction");
+                    }
+                }
+                MarketResponseKind::AuctionSellSpecificItemRequest
+                | MarketResponseKind::QuickSellAuctionSellAction => {
+                    let success = response.return_code == 0;
+                    tracing::debug!(return_code = response.return_code, success, kind = ?response.kind, "market sell response observed");
+                    if let Some(tx) = correlator.observe_sell_response(success) {
+                        tracing::debug!(?tx, "market sell correlation finalized transaction");
+                        out.push(tx);
+                    } else {
+                        tracing::debug!(success, "market sell response did not finalize a transaction");
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(request) = decode_market_request(message) {
+            let side = match request.kind {
+                MarketRequestKind::AuctionBuyOffer => TradeSide::Buy,
+                MarketRequestKind::AuctionSellSpecificItemRequest
+                | MarketRequestKind::QuickSellAuctionSellAction => TradeSide::Sell,
+            };
+            let cache_hit = correlator.has_cached_order(request.order_id);
+            tracing::debug!(
+                kind = ?request.kind,
+                side = ?side,
+                order_id = request.order_id,
+                amount = request.amount,
+                cache_hit,
+                "market request observed"
+            );
+            match side {
+                TradeSide::Buy => correlator.observe_buy_request(request.order_id, request.amount),
+                TradeSide::Sell => correlator.observe_sell_request(request.order_id, request.amount),
+            }
+        }
+    }
+    correlator.expire_old_state();
+    out
 }
 
 pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTransaction> {

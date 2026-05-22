@@ -1,8 +1,10 @@
+pub mod correlator;
 pub mod decoder;
 pub mod event_codes;
 pub mod hosts;
 pub mod ids;
 pub mod market;
+pub mod market_decode;
 pub mod market_mapper;
 pub mod operation_codes;
 pub mod protocol;
