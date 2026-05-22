@@ -56,7 +56,7 @@ pub fn extract_market_transactions(messages: &[PhotonMessage]) -> Vec<MarketTran
 }
 
 fn map_message_to_transaction(message: &PhotonMessage) -> Option<MarketTransaction> {
-    match AlbionCommandType::from(message.command_type) {
+    match AlbionCommandType::from_message_type(message.message_type) {
         AlbionCommandType::Event => {
             let event_map = decode_event_payload(&message.payload).ok()?;
             return map_decoded_payload_to_transaction(AlbionCommandType::Event, &event_map);
@@ -79,9 +79,10 @@ fn map_message_to_transaction(message: &PhotonMessage) -> Option<MarketTransacti
         AlbionCommandType::Reliable
         | AlbionCommandType::Unreliable
         | AlbionCommandType::Fragment
-        | AlbionCommandType::Disconnect => {
+        | AlbionCommandType::Disconnect
+        | AlbionCommandType::OperationRequest => {
             tracing::debug!(
-                command_type = message.command_type,
+                command_type = u16::from(message.command_type),
                 channel = message.channel,
                 seq = message.reliable_sequence,
                 "ignoring non-decoded transport command type"
@@ -108,6 +109,7 @@ fn map_decoded_payload_to_transaction(
         | AlbionCommandType::Unreliable
         | AlbionCommandType::Fragment
         | AlbionCommandType::Disconnect
+        | AlbionCommandType::OperationRequest
         | AlbionCommandType::Unsupported(_) => None,
     }
 }
@@ -154,7 +156,7 @@ fn decoded_response_from_map(
 }
 
 pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
-    match AlbionCommandType::from(message.command_type) {
+    match AlbionCommandType::from_message_type(message.message_type) {
         AlbionCommandType::Event => {
             let Ok(event_map) = decode_event_payload(&message.payload) else {
                 return DecodeProbe::EventDecodeFailed;
@@ -192,8 +194,9 @@ pub fn probe_message(message: &PhotonMessage) -> DecodeProbe {
         AlbionCommandType::Reliable
         | AlbionCommandType::Unreliable
         | AlbionCommandType::Fragment
-        | AlbionCommandType::Disconnect => DecodeProbe::UnsupportedCommandType {
-            command_type: message.command_type,
+        | AlbionCommandType::Disconnect
+        | AlbionCommandType::OperationRequest => DecodeProbe::UnsupportedCommandType {
+            command_type: u16::from(message.command_type),
             message_type: "request",
             encrypted_like: payload_looks_encrypted(&message.payload),
         },
@@ -587,7 +590,10 @@ mod tests {
         let message = PhotonMessage {
             command_type: 255,
             channel: 2,
+            command_flags: 0,
             reliable_sequence: 10,
+            signal_byte: 0,
+            message_type: 0,
             payload_length: 0,
             payload: Vec::new(),
         };
