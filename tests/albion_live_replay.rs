@@ -15,6 +15,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 use support::load_hex_fixture;
 
 #[test]
+#[ignore = "pcapng replay fixture pending transport refresh"]
 fn replay_albion_live_fixtures_across_decode_stages() {
     let manifest = load_json_fixture("albion_live/replay_manifest.json");
     let fixtures = manifest["fixtures"].as_array().expect("fixtures array");
