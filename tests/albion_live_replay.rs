@@ -11,6 +11,7 @@ fn replay_pcapng_packets_across_decode_stages() {
     let packets = load_pcapng_packets("../../quick_buy_and_sell.pcapng");
     assert!(!packets.is_empty());
 
+    let mut udp_payload_count = 0usize;
     let mut frame_count = 0usize;
     let mut envelope_count = 0usize;
 
@@ -21,6 +22,7 @@ fn replay_pcapng_packets_across_decode_stages() {
         }) else {
             continue;
         };
+        udp_payload_count += 1;
         if let Ok(frames) = parse_udp_payload(tuple.payload) {
             frame_count += frames.len();
             for frame in frames {
@@ -30,6 +32,14 @@ fn replay_pcapng_packets_across_decode_stages() {
             }
         }
     }
+
+    eprintln!(
+        "[debug] replay stats: packets={}, udp_payloads={}, transport_frames={}, decoded_envelopes={}",
+        packets.len(),
+        udp_payload_count,
+        frame_count,
+        envelope_count
+    );
 
     assert!(frame_count > 0, "expected parsed transport frames");
     assert!(envelope_count > 0, "expected decoded command envelopes");
