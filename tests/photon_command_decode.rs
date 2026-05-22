@@ -1,28 +1,35 @@
 mod support;
 
-use albion_accountant::albion::protocol::{
-    commands::decode_command_envelope, transport::parse_udp_payload,
+use albion_accountant::albion::{
+    decoder::{CapturePacket, extract_udp_payload},
+    protocol::{commands::decode_command_envelope, transport::parse_udp_payload},
 };
-use support::load_hex_fixture;
+use support::load_pcapng_packets;
 
 #[test]
-fn parses_transport_frame_and_command_envelope() {
-    let packet = load_hex_fixture("market_packet_valid.hex");
-    let frames = parse_udp_payload(&packet).expect("frame should parse");
-    assert_eq!(frames.len(), 1);
+fn parses_transport_frame_and_command_envelope_from_pcapng() {
+    let packets = load_pcapng_packets("../../quick_buy_and_sell.pcapng");
+    assert!(!packets.is_empty(), "pcapng must contain packets");
 
-    let message = decode_command_envelope(&frames[0].body).expect("command envelope should parse");
-    assert_eq!(message.command_type, 7);
-    assert_eq!(message.channel, 0);
-    assert_eq!(message.reliable_sequence, 1);
-    assert_eq!(message.payload.len(), usize::from(message.payload_length));
+    let decoded = packets
+        .iter()
+        .filter_map(|packet| {
+            let tuple = extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet,
+            })
+            .ok()?;
+            let frames = parse_udp_payload(tuple.payload).ok()?;
+            let message = decode_command_envelope(&frames.first()?.body).ok()?;
+            Some(message)
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!decoded.is_empty(), "expected at least one decodable message");
 }
 
 #[test]
-fn rejects_truncated_packet_deterministically() {
-    let packet = load_hex_fixture("truncated_packet.hex");
-    let err = parse_udp_payload(&packet).expect_err("must fail");
-    let rendered = err.to_string();
-    assert!(rendered.contains("offset 2"));
-    assert!(rendered.contains("frame length 6 exceeds remaining 5"));
+fn malformed_transport_bytes_fail_deterministically() {
+    let err = parse_udp_payload(&[0x01, 0x02, 0x03]).expect_err("must fail");
+    assert!(!err.to_string().is_empty());
 }

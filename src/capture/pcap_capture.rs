@@ -1,7 +1,11 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use tracing::{info, warn};
+use anyhow::{Result, bail};
+#[cfg(feature = "pcap")]
+use anyhow::Context;
+#[cfg(feature = "pcap")]
+use tracing::info;
+use tracing::warn;
 
 use crate::{albion::hosts, config::FilterMode};
 
@@ -18,34 +22,6 @@ fn format_host_filter_term(host: &str) -> String {
         }
     }
     format!("host {host}")
-}
-
-pub fn list_interfaces() -> Result<Vec<String>> {
-    Ok(pcap::Device::list()?
-        .into_iter()
-        .map(|d| d.name)
-        .collect::<Vec<_>>())
-}
-
-pub fn list_non_loopback_interfaces() -> Result<Vec<String>> {
-    Ok(pcap::Device::list()?
-        .into_iter()
-        .filter(|d| !d.flags.is_loopback())
-        .map(|d| d.name)
-        .collect::<Vec<_>>())
-}
-
-pub fn pick_interface(configured: Vec<String>) -> Result<String> {
-    if let Some(name) = configured.first() {
-        return Ok(name.clone());
-    }
-    let devices = pcap::Device::list()?;
-    let best = devices
-        .iter()
-        .find(|d| !d.flags.is_loopback())
-        .or_else(|| devices.first())
-        .context("no capture interfaces found")?;
-    Ok(best.name.clone())
 }
 
 pub fn build_filter_expression(
@@ -87,11 +63,92 @@ pub fn build_filter_expression(
     }
 }
 
+#[cfg(feature = "pcap")]
+pub fn list_interfaces() -> Result<Vec<String>> {
+    Ok(pcap::Device::list()?
+        .into_iter()
+        .map(|d| d.name)
+        .collect::<Vec<_>>())
+}
+
+#[cfg(not(feature = "pcap"))]
+pub fn list_interfaces() -> Result<Vec<String>> {
+    bail!("pcap support is disabled at compile time")
+}
+
+#[cfg(feature = "pcap")]
+pub fn list_non_loopback_interfaces() -> Result<Vec<String>> {
+    Ok(pcap::Device::list()?
+        .into_iter()
+        .filter(|d| !d.flags.is_loopback())
+        .map(|d| d.name)
+        .collect::<Vec<_>>())
+}
+
+#[cfg(not(feature = "pcap"))]
+pub fn list_non_loopback_interfaces() -> Result<Vec<String>> {
+    bail!("pcap support is disabled at compile time")
+}
+
+#[cfg(feature = "pcap")]
+pub fn pick_interface(configured: Vec<String>) -> Result<String> {
+    if let Some(name) = configured.first() {
+        return Ok(name.clone());
+    }
+    let devices = pcap::Device::list()?;
+    let best = devices
+        .iter()
+        .find(|d| !d.flags.is_loopback())
+        .or_else(|| devices.first())
+        .context("no capture interfaces found")?;
+    Ok(best.name.clone())
+}
+
+#[cfg(not(feature = "pcap"))]
+pub fn pick_interface(_configured: Vec<String>) -> Result<String> {
+    bail!("pcap support is disabled at compile time")
+}
+
+#[cfg(feature = "pcap")]
 pub fn open_capture_file(path: &Path) -> Result<pcap::Capture<pcap::Offline>> {
     pcap::Capture::from_file(path)
         .with_context(|| format!("failed to open capture file {}", path.display()))
 }
 
+#[cfg(not(feature = "pcap"))]
+pub struct OfflineCaptureStub;
+#[cfg(not(feature = "pcap"))]
+pub struct ActiveCaptureStub;
+#[cfg(not(feature = "pcap"))]
+pub struct CapturePacketStub {
+    pub data: &'static [u8],
+}
+#[cfg(not(feature = "pcap"))]
+pub struct DataLinkStub(pub i32);
+#[cfg(not(feature = "pcap"))]
+impl OfflineCaptureStub {
+    pub fn get_datalink(&self) -> DataLinkStub {
+        DataLinkStub(1)
+    }
+    pub fn next_packet(&mut self) -> Result<CapturePacketStub> {
+        bail!("pcap support is disabled at compile time")
+    }
+}
+#[cfg(not(feature = "pcap"))]
+impl ActiveCaptureStub {
+    pub fn get_datalink(&self) -> DataLinkStub {
+        DataLinkStub(1)
+    }
+    pub fn next_packet(&mut self) -> Result<CapturePacketStub> {
+        bail!("pcap support is disabled at compile time")
+    }
+}
+#[cfg(not(feature = "pcap"))]
+pub fn open_capture_file(_path: &Path) -> Result<OfflineCaptureStub> {
+    bail!("pcap support is disabled at compile time")
+}
+
+#[cfg(feature = "pcap")]
 pub fn open_capture_handle(
     interface: &str,
     filter_expr: &str,
@@ -106,6 +163,12 @@ pub fn open_capture_handle(
     Ok(cap)
 }
 
+#[cfg(not(feature = "pcap"))]
+pub fn open_capture_handle(_interface: &str, _filter_expr: &str) -> Result<ActiveCaptureStub> {
+    bail!("pcap support is disabled at compile time")
+}
+
+#[cfg(feature = "pcap")]
 pub fn spawn_capture_thread<F>(
     interface: String,
     filter_expr: String,
