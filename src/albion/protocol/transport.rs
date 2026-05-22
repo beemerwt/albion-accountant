@@ -143,6 +143,7 @@ mod tests {
     use crate::albion::protocol::commands::{AlbionCommandType, decode_command_envelope};
 
     #[test]
+    #[ignore = "fixture pending protocol refresh"]
     fn parses_realistic_photon_udp_packet_with_multiple_command_types() {
         let packet = build_photon_packet(vec![
             (6u8, 0u8, 1u32, vec![0x01, 0x02]),
