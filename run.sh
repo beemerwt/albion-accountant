@@ -5,4 +5,4 @@ export RUST_LOG=debug
 
 cargo build
 sudo setcap cap_net_raw,cap_net_admin=eip ./target/debug/albion-accountant
-./target/debug/albion-accountant --interface enp41s0 --dry-run
+./target/debug/albion-accountant --pcap-file ./quick_buy_and_sell.pcapng --dry-run
