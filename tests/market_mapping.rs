@@ -4,7 +4,9 @@ use albion_accountant::albion::{
     decoder::{CapturePacket, extract_market_transactions, extract_udp_payload},
     ids,
     market_mapper::{DecodedOperationResponse, map_response_to_transaction},
-    protocol::{commands::decode_command_envelope, protocol16::ProtocolValue, transport::parse_udp_payload},
+    protocol::{
+        commands::decode_command_envelope, protocol16::ProtocolValue, transport::parse_udp_payload,
+    },
 };
 use std::collections::BTreeMap;
 use support::load_pcapng_packets;
@@ -17,7 +19,10 @@ fn maps_market_packets_from_pcapng_to_transactions() {
     let mut transport_frames = 0usize;
 
     for packet in &packets {
-        let Ok(tuple) = extract_udp_payload(CapturePacket { link_type: 1, packet }) else {
+        let Ok(tuple) = extract_udp_payload(CapturePacket {
+            link_type: 1,
+            packet,
+        }) else {
             continue;
         };
         udp_payloads += 1;
@@ -54,14 +59,69 @@ fn mapping_table_supported_opcodes_require_expected_fields() {
             op_code: *op_code,
             return_code: 0,
             params: BTreeMap::from([
-                ("LocationId".to_string(), ProtocolValue::String("Martlock".to_string())),
-                ("ItemTypeId".to_string(), ProtocolValue::String("T4_BAG".to_string())),
+                (
+                    "LocationId".to_string(),
+                    ProtocolValue::String("Martlock".to_string()),
+                ),
+                (
+                    "ItemTypeId".to_string(),
+                    ProtocolValue::String("T4_BAG".to_string()),
+                ),
                 ("Amount".to_string(), ProtocolValue::UnsignedInt(3)),
-                ("UnitPriceSilver".to_string(), ProtocolValue::UnsignedLong(1200)),
+                (
+                    "UnitPriceSilver".to_string(),
+                    ProtocolValue::UnsignedLong(1200),
+                ),
             ]),
         };
         let tx = map_response_to_transaction(&response)
             .unwrap_or_else(|| panic!("opcode {op_code:#x} should map with canonical fields"));
         assert_eq!(tx.location, "Martlock");
     }
+}
+
+#[test]
+fn maps_auction_buy_offer_response_to_transaction() {
+    let response = DecodedOperationResponse {
+        op_code: albion_accountant::albion::operation_codes::OperationCodes::AuctionBuyOffer as u16,
+        return_code: 0,
+        params: BTreeMap::from([
+            (
+                "LocationId".to_string(),
+                ProtocolValue::String("Martlock".to_string()),
+            ),
+            (
+                "ItemTypeId".to_string(),
+                ProtocolValue::String("T4_BAG".to_string()),
+            ),
+            ("Amount".to_string(), ProtocolValue::UnsignedInt(2)),
+            (
+                "UnitPriceSilver".to_string(),
+                ProtocolValue::UnsignedLong(1500),
+            ),
+        ]),
+    };
+
+    let tx = map_response_to_transaction(&response).expect("buy response should map");
+    assert_eq!(tx.item, "T4_BAG");
+    assert_eq!(tx.quantity, 2);
+    assert_eq!(tx.total_cost, 3000);
+}
+
+#[test]
+fn maps_auction_sell_specific_item_response_to_transaction() {
+    let response = DecodedOperationResponse {
+        op_code: albion_accountant::albion::operation_codes::OperationCodes::AuctionSellSpecificItemRequest as u16,
+        return_code: 0,
+        params: BTreeMap::from([
+            ("LocationId".to_string(), ProtocolValue::String("Bridgewatch".to_string())),
+            ("ItemTypeId".to_string(), ProtocolValue::String("T5_CAPE".to_string())),
+            ("Amount".to_string(), ProtocolValue::UnsignedInt(1)),
+            ("UnitPriceSilver".to_string(), ProtocolValue::UnsignedLong(42000)),
+        ]),
+    };
+
+    let tx = map_response_to_transaction(&response).expect("sell response should map");
+    assert_eq!(tx.location, "Bridgewatch");
+    assert_eq!(tx.total_cost, 42000);
 }
