@@ -11,6 +11,8 @@ pub const MARKET_EVENT_CODES: &[u16] = &[
 pub const MARKET_OPERATION_CODES: &[u16] = &[
     OperationCodes::AuctionGetOffers as u16,
     OperationCodes::AuctionGetRequests as u16,
+    OperationCodes::AuctionBuyOffer as u16,
+    OperationCodes::AuctionSellSpecificItemRequest as u16,
     OperationCodes::QuickSellAuctionSellAction as u16,
 ];
 
