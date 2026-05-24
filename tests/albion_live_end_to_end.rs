@@ -3,12 +3,15 @@ mod support;
 use albion_accountant::albion::{
     correlator::TradeCorrelator,
     decoder::{
-        CapturePacket, extract_market_transactions, extract_market_transactions_stateful,
-        extract_udp_payload,
+        CapturePacket, DecodeProbe, extract_market_transactions, extract_market_transactions_stateful,
+        extract_udp_payload, probe_message,
     },
-    protocol::{commands::decode_command_envelope, transport::parse_udp_payload},
+    protocol::{
+        commands::decode_command_envelope, events::decode_event_payload,
+        operations::decode_operation_payload, transport::parse_udp_payload,
+    },
 };
-use support::load_pcapng_packets;
+use support::{load_hex_fixture, load_pcapng_packets};
 
 #[test]
 fn pcapng_covers_full_market_pipeline() {
@@ -56,47 +59,118 @@ fn pcapng_covers_full_market_pipeline() {
 
 #[test]
 fn pcapng_replay_emits_completed_market_transactions() {
-    let packets = load_pcapng_packets("../../quick_buy_and_sell.pcapng");
-    assert!(!packets.is_empty(), "pcapng must contain packets");
+    let mut decoded_events = 0usize;
+    let mut decoded_operations = 0usize;
+    let mut all_messages = Vec::new();
+    for capture in [
+        "../../quick_buy_and_sell.pcapng",
+        "../../full_market_quick_buy.pcapng",
+        "../../full_market_quick_sell.pcapng",
+    ] {
+        let packets = load_pcapng_packets(capture);
+        assert!(!packets.is_empty(), "pcapng must contain packets: {capture}");
 
-    let mut messages = Vec::new();
-    for packet in &packets {
-        let Ok(tuple) = extract_udp_payload(CapturePacket {
-            link_type: 1,
-            packet,
-        }) else {
-            continue;
-        };
+        let mut messages = Vec::new();
+        for packet in &packets {
+            let Ok(tuple) = extract_udp_payload(CapturePacket {
+                link_type: 1,
+                packet,
+            }) else {
+                continue;
+            };
 
-        let Ok(frames) = parse_udp_payload(tuple.payload) else {
-            continue;
-        };
+            let Ok(frames) = parse_udp_payload(tuple.payload) else {
+                continue;
+            };
 
-        for frame in frames {
-            if let Ok(msg) = decode_command_envelope(&frame.body) {
-                messages.push(msg);
+            for frame in frames {
+                if let Ok(msg) = decode_command_envelope(&frame.body) {
+                    messages.push(msg);
+                }
+            }
+        }
+
+        assert!(
+            !messages.is_empty(),
+            "expected at least one fully decoded command envelope in {capture}"
+        );
+        all_messages.extend(messages.clone());
+
+        for message in &messages {
+            match probe_message(message) {
+                DecodeProbe::EventDecoded {
+                    code,
+                    key_count,
+                    encrypted_like,
+                    ..
+                } => {
+                    decoded_events += 1;
+                    eprintln!(
+                        "[decoded-event] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, event_code={}, param_keys={}, encrypted_like={}",
+                        capture,
+                        message.channel,
+                        u16::from(message.command_type),
+                        message.message_type,
+                        message.reliable_sequence,
+                        message.payload_length,
+                        code,
+                        key_count,
+                        encrypted_like
+                    );
+                }
+                DecodeProbe::OperationDecoded {
+                    op_code,
+                    return_code,
+                    key_count,
+                    encrypted_like,
+                    ..
+                } => {
+                    decoded_operations += 1;
+                    eprintln!(
+                        "[decoded-operation] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, op_code={}, return_code={}, param_keys={}, encrypted_like={}",
+                        capture,
+                        message.channel,
+                        u16::from(message.command_type),
+                        message.message_type,
+                        message.reliable_sequence,
+                        message.payload_length,
+                        op_code,
+                        return_code,
+                        key_count,
+                        encrypted_like
+                    );
+                }
+                DecodeProbe::UnsupportedCommandType { .. }
+                | DecodeProbe::EventDecodeFailed
+                | DecodeProbe::OperationDecodeFailed => {}
             }
         }
     }
 
-    assert!(
-        !messages.is_empty(),
-        "expected at least one fully decoded command envelope"
-    );
+    let fixture = load_hex_fixture("market_packet_valid.hex");
+    if let Ok(event_map) = decode_event_payload(&fixture) {
+        decoded_events += 1;
+        eprintln!(
+            "[decoded-event] capture=market_packet_valid.hex, event_top_level_keys={}",
+            event_map.len()
+        );
+    }
+    if let Ok(op_map) = decode_operation_payload(&fixture) {
+        decoded_operations += 1;
+        eprintln!(
+            "[decoded-operation] capture=market_packet_valid.hex, operation_top_level_keys={}",
+            op_map.len()
+        );
+    }
 
-    let first = &messages[0];
-    eprintln!(
-        "[decoded-packet] channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}",
-        first.channel,
-        u16::from(first.command_type),
-        first.message_type,
-        first.reliable_sequence,
-        first.payload_length
+    assert!(
+        decoded_events + decoded_operations > 0,
+        "expected at least one fully decoded event or operation response"
     );
 
     let mut correlator = TradeCorrelator::default();
-    let stateful = extract_market_transactions_stateful(&mut correlator, &messages);
-    let stateless = extract_market_transactions(&messages);
+    let stateful = extract_market_transactions_stateful(&mut correlator, &all_messages);
+    let stateless = extract_market_transactions(&all_messages);
     for tx in stateful.iter().chain(stateless.iter()) {
         eprintln!(
             "[decoded-transaction] location={}, item={}, quantity={}, per_item_cost={}, total_cost={}",
