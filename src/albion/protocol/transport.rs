@@ -68,8 +68,22 @@ fn parse_photon_udp_packet(payload: &[u8]) -> Result<Vec<FramedPayload>, FramePa
             return Err(FrameParseError::Incomplete { offset: cursor, needed: command_len, remaining, state: "command_payload" });
         }
 
-        let payload_start = cursor + PHOTON_COMMAND_HEADER_LEN;
-        let payload_len = command_len - PHOTON_COMMAND_HEADER_LEN;
+        let mut payload_start = cursor + PHOTON_COMMAND_HEADER_LEN;
+        let mut payload_len = command_len - PHOTON_COMMAND_HEADER_LEN;
+
+        if command_type == 7 {
+            if payload_len < 4 {
+                return Err(FrameParseError::Invalid(DecodeError::Transport {
+                    offset: cursor,
+                    reason: format!(
+                        "unreliable command payload length {payload_len} smaller than 4-byte subheader at index {idx}"
+                    ),
+                }));
+            }
+            payload_start += 4;
+            payload_len -= 4;
+        }
+
         let body_slice = &payload[payload_start..payload_start + payload_len];
 
         let mut envelope = Vec::with_capacity(7 + body_slice.len());
@@ -173,6 +187,38 @@ mod tests {
         match err {
             FrameParseError::Incomplete { state, .. } => assert_eq!(state, "command_header"),
             other => panic!("expected incomplete, got {other:?}"),
+        }
+    }
+
+
+    #[test]
+    fn unreliable_command_skips_subheader_and_preserves_message_type() {
+        let packet = build_photon_packet(vec![(
+            7u8,
+            0u8,
+            1u32,
+            vec![0xDE, 0xAD, 0xBE, 0xEF, 0x99, 0x02, 0x11, 0x22],
+        )]);
+
+        let frames = parse_udp_payload_incremental(&packet).expect("parses packet");
+        assert_eq!(frames.len(), 1);
+
+        let decoded = decode_command_envelope(&frames[0].body).expect("decodes envelope");
+        assert_eq!(decoded.command_type, 7);
+        assert_eq!(decoded.message_type, 0x02);
+        assert_eq!(decoded.payload, vec![0x11, 0x22]);
+    }
+
+    #[test]
+    fn unreliable_command_rejects_short_subheader_payload() {
+        let packet = build_photon_packet(vec![(7u8, 0u8, 1u32, vec![0xAA, 0xBB, 0xCC])]);
+
+        let err = parse_udp_payload_incremental(&packet).expect_err("must fail");
+        match err {
+            FrameParseError::Invalid(DecodeError::Transport { reason, .. }) => {
+                assert!(reason.contains("4-byte subheader"));
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 
