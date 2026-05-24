@@ -88,4 +88,25 @@ Headers are auto-created if missing:
 
 ## Testing
 
-Run all tests with `cargo test`.
+Available test suites:
+
+- **Unit tests (library + binary crates):** `cargo test --lib --bins`
+- **Integration tests:**
+  - `cargo test --test albion_live_end_to_end`
+  - `cargo test --test albion_live_replay`
+  - `cargo test --test market_mapping`
+  - `cargo test --test photon_command_decode`
+  - `cargo test --test protocol16_decode`
+- **Doc tests:** `cargo test --doc`
+
+Run everything at once:
+
+```bash
+cargo test
+```
+
+To list all discovered tests without running them:
+
+```bash
+cargo test -- --list
+```
