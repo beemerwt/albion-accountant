@@ -59,11 +59,14 @@ fn pcapng_covers_full_market_pipeline() {
 
 #[test]
 fn pcapng_replay_emits_completed_market_transactions() {
+    use std::collections::BTreeMap;
+
     let mut decoded_events = 0usize;
     let mut decoded_operations = 0usize;
     let mut all_messages = Vec::new();
     let mut valid_envelopes = 0usize;
     let mut payload_candidates = 0usize;
+    let mut replay_debug_summaries: Vec<(String, usize, usize, usize, BTreeMap<u8, usize>)> = Vec::new();
 
     for capture in [
         "../../quick_buy_and_sell.pcapng",
@@ -106,9 +109,16 @@ fn pcapng_replay_emits_completed_market_transactions() {
             "expected at least one fully decoded command envelope in {capture}"
         );
         all_messages.extend(messages.clone());
+        let mut unsupported_message_type_count = 0usize;
+        let mut event_decode_failed_count = 0usize;
+        let mut operation_decode_failed_count = 0usize;
+        let mut message_type_histogram: BTreeMap<u8, usize> = BTreeMap::new();
 
         for message in &messages {
+            *message_type_histogram.entry(message.message_type).or_insert(0) += 1;
+
             if !matches!(message.message_type, 0x02 | 0x03 | 0x04) {
+                unsupported_message_type_count += 1;
                 continue;
             }
             payload_candidates += 1;
@@ -156,9 +166,11 @@ fn pcapng_replay_emits_completed_market_transactions() {
                         encrypted_like
                     );
                 }
-                DecodeProbe::UnsupportedCommandType { .. }
-                | DecodeProbe::EventDecodeFailed
-                | DecodeProbe::OperationDecodeFailed => {
+                DecodeProbe::UnsupportedCommandType { .. } => {
+                    unsupported_message_type_count += 1;
+                }
+                DecodeProbe::EventDecodeFailed => {
+                    event_decode_failed_count += 1;
                     if message.message_type == 0x04 {
                         if let Ok(event_map) = decode_event_payload(&message.payload) {
                             decoded_events += 1;
@@ -174,6 +186,7 @@ fn pcapng_replay_emits_completed_market_transactions() {
                             );
                         }
                     } else if let Ok(op_map) = decode_operation_payload(&message.payload) {
+                        operation_decode_failed_count += 1;
                         decoded_operations += 1;
                         eprintln!(
                             "[decoded-operation-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, operation_top_level_keys={}",
@@ -185,10 +198,23 @@ fn pcapng_replay_emits_completed_market_transactions() {
                             message.payload_length,
                             op_map.len()
                         );
+                    } else {
+                        operation_decode_failed_count += 1;
                     }
+                }
+                DecodeProbe::OperationDecodeFailed => {
+                    operation_decode_failed_count += 1;
                 }
             }
         }
+
+        replay_debug_summaries.push((
+            capture.to_string(),
+            unsupported_message_type_count,
+            event_decode_failed_count,
+            operation_decode_failed_count,
+            message_type_histogram,
+        ));
     }
 
     assert!(
@@ -209,6 +235,24 @@ fn pcapng_replay_emits_completed_market_transactions() {
         eprintln!(
             "[fixture-decoded-operation] fixture=market_packet_valid.hex, operation_top_level_keys={}",
             op_map.len()
+        );
+    }
+
+    for (
+        capture,
+        unsupported_message_type_count,
+        event_decode_failed_count,
+        operation_decode_failed_count,
+        message_type_histogram,
+    ) in &replay_debug_summaries
+    {
+        eprintln!(
+            "[replay-decode-debug] capture={}, unsupported_message_type_count={}, event_decode_failed_count={}, operation_decode_failed_count={}, message_type_histogram={:?}",
+            capture,
+            unsupported_message_type_count,
+            event_decode_failed_count,
+            operation_decode_failed_count,
+            message_type_histogram
         );
     }
 
