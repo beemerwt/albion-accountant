@@ -3,8 +3,8 @@ mod support;
 use albion_accountant::albion::{
     correlator::TradeCorrelator,
     decoder::{
-        CapturePacket, DecodeProbe, extract_market_transactions, extract_market_transactions_stateful,
-        extract_udp_payload, probe_message,
+        CapturePacket, DecodeProbe, extract_market_transactions,
+        extract_market_transactions_stateful, extract_udp_payload, probe_message,
     },
     protocol::{
         commands::decode_command_envelope, events::decode_event_payload,
@@ -63,7 +63,8 @@ fn pcapng_replay_emits_completed_market_transactions() {
 
     let mut decoded_events = 0usize;
     let mut decoded_operations = 0usize;
-    let mut replay_debug_summaries: Vec<(String, usize, usize, usize, BTreeMap<u8, usize>)> = Vec::new();
+    let mut replay_debug_summaries: Vec<(String, usize, usize, usize, BTreeMap<u8, usize>)> =
+        Vec::new();
     #[derive(Default)]
     struct CaptureCounts {
         envelopes: usize,
@@ -85,7 +86,10 @@ fn pcapng_replay_emits_completed_market_transactions() {
         "../../full_market_quick_sell.pcapng",
     ] {
         let packets = load_pcapng_packets(capture);
-        assert!(!packets.is_empty(), "pcapng must contain packets: {capture}");
+        assert!(
+            !packets.is_empty(),
+            "pcapng must contain packets: {capture}"
+        );
 
         let mut messages = Vec::new();
         let mut counts = CaptureCounts::default();
@@ -121,7 +125,9 @@ fn pcapng_replay_emits_completed_market_transactions() {
 
         // Stage A: pcap transport/envelope accounting.
         for message in &messages {
-            *message_type_histogram.entry(message.message_type).or_insert(0) += 1;
+            *message_type_histogram
+                .entry(message.message_type)
+                .or_insert(0) += 1;
 
             if !matches!(message.message_type, 0x02 | 0x03 | 0x04) {
                 unsupported_message_type_count += 1;
@@ -151,15 +157,11 @@ fn pcapng_replay_emits_completed_market_transactions() {
             .filter(|m| matches!(m.message_type, 0x02 | 0x03 | 0x04))
         {
             match probe_message(message) {
-                DecodeProbe::EventDecoded {
-                    ..
-                } => {
+                DecodeProbe::EventDecoded { .. } => {
                     counts.event_decoded += 1;
                     replay_decoded_events += 1;
                 }
-                DecodeProbe::OperationDecoded {
-                    ..
-                } => {
+                DecodeProbe::OperationDecoded { .. } => {
                     counts.op_decoded += 1;
                     replay_decoded_operations += 1;
                 }
@@ -236,7 +238,8 @@ fn pcapng_replay_emits_completed_market_transactions() {
         total_counts.envelopes > 0,
         "Stage A failed: expected replay captures to produce at least one valid command envelope"
     );
-    if replay_decoded_events + replay_decoded_operations + decoded_events + decoded_operations == 0 {
+    if replay_decoded_events + replay_decoded_operations + decoded_events + decoded_operations == 0
+    {
         eprintln!(
             "Stage B warning: no decodable replay payloads (probe/direct). totals: envelopes={}, type2={}, type3={}, type4={}, event_decoded={}, op_decoded={}, direct_event_decoded={}, direct_op_decoded={}",
             total_counts.envelopes,

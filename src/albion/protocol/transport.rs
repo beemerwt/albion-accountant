@@ -21,7 +21,9 @@ pub enum FrameParseError {
     Invalid(DecodeError),
 }
 
-pub fn parse_udp_payload_incremental(payload: &[u8]) -> Result<Vec<FramedPayload>, FrameParseError> {
+pub fn parse_udp_payload_incremental(
+    payload: &[u8],
+) -> Result<Vec<FramedPayload>, FrameParseError> {
     if payload.len() >= PHOTON_PACKET_HEADER_LEN {
         parse_photon_udp_packet(payload)
     } else {
@@ -37,8 +39,19 @@ fn parse_photon_udp_packet(payload: &[u8]) -> Result<Vec<FramedPayload>, FramePa
     for idx in 0..command_count {
         let remaining = payload.len().saturating_sub(cursor);
         if remaining < PHOTON_COMMAND_HEADER_LEN {
-            log_incomplete(payload, cursor, PHOTON_COMMAND_HEADER_LEN, remaining, "command_header");
-            return Err(FrameParseError::Incomplete { offset: cursor, needed: PHOTON_COMMAND_HEADER_LEN, remaining, state: "command_header" });
+            log_incomplete(
+                payload,
+                cursor,
+                PHOTON_COMMAND_HEADER_LEN,
+                remaining,
+                "command_header",
+            );
+            return Err(FrameParseError::Incomplete {
+                offset: cursor,
+                needed: PHOTON_COMMAND_HEADER_LEN,
+                remaining,
+                state: "command_header",
+            });
         }
 
         let command_type = payload[cursor];
@@ -58,14 +71,25 @@ fn parse_photon_udp_packet(payload: &[u8]) -> Result<Vec<FramedPayload>, FramePa
         ]);
 
         if command_len < PHOTON_COMMAND_HEADER_LEN {
-            return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor, reason: format!("command length {command_len} smaller than header at index {idx}") }));
+            return Err(FrameParseError::Invalid(DecodeError::Transport {
+                offset: cursor,
+                reason: format!("command length {command_len} smaller than header at index {idx}"),
+            }));
         }
         if command_len > MAX_FRAME_LENGTH {
-            return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor, reason: format!("command length {command_len} exceeds max {MAX_FRAME_LENGTH}") }));
+            return Err(FrameParseError::Invalid(DecodeError::Transport {
+                offset: cursor,
+                reason: format!("command length {command_len} exceeds max {MAX_FRAME_LENGTH}"),
+            }));
         }
         if command_len > remaining {
             log_incomplete(payload, cursor, command_len, remaining, "command_payload");
-            return Err(FrameParseError::Incomplete { offset: cursor, needed: command_len, remaining, state: "command_payload" });
+            return Err(FrameParseError::Incomplete {
+                offset: cursor,
+                needed: command_len,
+                remaining,
+                state: "command_payload",
+            });
         }
 
         let mut payload_start = cursor + PHOTON_COMMAND_HEADER_LEN;
@@ -99,7 +123,14 @@ fn parse_photon_udp_packet(payload: &[u8]) -> Result<Vec<FramedPayload>, FramePa
     }
 
     if cursor != payload.len() {
-        return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor, reason: format!("trailing {0} bytes after {1} commands", payload.len()-cursor, command_count) }));
+        return Err(FrameParseError::Invalid(DecodeError::Transport {
+            offset: cursor,
+            reason: format!(
+                "trailing {0} bytes after {1} commands",
+                payload.len() - cursor,
+                command_count
+            ),
+        }));
     }
     Ok(out)
 }
@@ -110,28 +141,50 @@ fn parse_legacy_length_prefixed(payload: &[u8]) -> Result<Vec<FramedPayload>, Fr
     while cursor < payload.len() {
         let header_remaining = payload.len() - cursor;
         if header_remaining < 2 {
-            return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor, reason: "trailing byte noise after frame parsing".into() }));
+            return Err(FrameParseError::Invalid(DecodeError::Transport {
+                offset: cursor,
+                reason: "trailing byte noise after frame parsing".into(),
+            }));
         }
         let len = u16::from_be_bytes([payload[cursor], payload[cursor + 1]]) as usize;
         cursor += 2;
         if len == 0 {
-            return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor - 2, reason: "zero-length frame is not allowed".into() }));
+            return Err(FrameParseError::Invalid(DecodeError::Transport {
+                offset: cursor - 2,
+                reason: "zero-length frame is not allowed".into(),
+            }));
         }
         if len > MAX_FRAME_LENGTH {
-            return Err(FrameParseError::Invalid(DecodeError::Transport { offset: cursor - 2, reason: format!("frame length {len} exceeds max {MAX_FRAME_LENGTH}") }));
+            return Err(FrameParseError::Invalid(DecodeError::Transport {
+                offset: cursor - 2,
+                reason: format!("frame length {len} exceeds max {MAX_FRAME_LENGTH}"),
+            }));
         }
         let remaining = payload.len() - cursor;
         if len > remaining {
             log_incomplete(payload, cursor, len, remaining, "legacy_frame_payload");
-            return Err(FrameParseError::Incomplete { offset: cursor, needed: len, remaining, state: "legacy_frame_payload" });
+            return Err(FrameParseError::Incomplete {
+                offset: cursor,
+                needed: len,
+                remaining,
+                state: "legacy_frame_payload",
+            });
         }
-        out.push(FramedPayload { body: payload[cursor..cursor + len].to_vec() });
+        out.push(FramedPayload {
+            body: payload[cursor..cursor + len].to_vec(),
+        });
         cursor += len;
     }
     Ok(out)
 }
 
-fn log_incomplete(payload: &[u8], offset: usize, needed: usize, remaining: usize, state: &'static str) {
+fn log_incomplete(
+    payload: &[u8],
+    offset: usize,
+    needed: usize,
+    remaining: usize,
+    state: &'static str,
+) {
     let preview_len = payload.len().min(24);
     let first_bytes = payload[..preview_len]
         .iter()
@@ -143,9 +196,16 @@ fn log_incomplete(payload: &[u8], offset: usize, needed: usize, remaining: usize
 
 pub fn parse_udp_payload(payload: &[u8]) -> Result<Vec<FramedPayload>, DecodeError> {
     parse_udp_payload_incremental(payload).map_err(|err| match err {
-        FrameParseError::Incomplete { offset, needed, remaining, state } => DecodeError::Transport {
+        FrameParseError::Incomplete {
             offset,
-            reason: format!("incomplete frame ({state}): needed {needed} bytes, only {remaining} remain"),
+            needed,
+            remaining,
+            state,
+        } => DecodeError::Transport {
+            offset,
+            reason: format!(
+                "incomplete frame ({state}): needed {needed} bytes, only {remaining} remain"
+            ),
         },
         FrameParseError::Invalid(inner) => inner,
     })
@@ -189,7 +249,6 @@ mod tests {
             other => panic!("expected incomplete, got {other:?}"),
         }
     }
-
 
     #[test]
     fn unreliable_command_skips_subheader_and_preserves_message_type() {

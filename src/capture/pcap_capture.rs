@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use anyhow::{Result, bail};
 #[cfg(feature = "pcap")]
 use anyhow::Context;
+use anyhow::{Result, bail};
 #[cfg(feature = "pcap")]
 use tracing::info;
 use tracing::warn;

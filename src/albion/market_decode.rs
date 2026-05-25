@@ -49,7 +49,8 @@ pub struct NormalizedMarketOrder {
 }
 
 pub fn decode_market_request(message: &PhotonMessage) -> Option<DecodedMarketRequest> {
-    if AlbionCommandType::from_message_type(message.message_type) != AlbionCommandType::OperationRequest
+    if AlbionCommandType::from_message_type(message.message_type)
+        != AlbionCommandType::OperationRequest
     {
         return None;
     }
@@ -122,17 +123,36 @@ pub fn decode_market_response(message: &PhotonMessage) -> Option<DecodedMarketRe
     })
 }
 
-fn extract_orders_from_params(params: &BTreeMap<String, ProtocolValue>) -> Vec<NormalizedMarketOrder> {
+fn extract_orders_from_params(
+    params: &BTreeMap<String, ProtocolValue>,
+) -> Vec<NormalizedMarketOrder> {
     let mut out = Vec::new();
     for value in params.values() {
         let Some(arr) = as_array(value) else { continue };
         for elem in arr {
             let Some(map) = as_map(elem) else { continue };
-            let Some(order_id) = read_u64_any(map, &["Id", "OrderId", "id", "orderId"]) else { continue };
-            let Some(item_type_id) = read_string_any(map, &["ItemTypeId", "item", "ItemType"]) else { continue };
-            let Some(location_id) = read_string_any(map, &["LocationId", "location", "Location"]) else { continue };
-            let Some(unit_price_silver) = read_u64_any(map, &["UnitPriceSilver", "price", "UnitPrice"]) else { continue };
-            out.push(NormalizedMarketOrder { order_id, item_type_id, location_id, unit_price_silver });
+            let Some(order_id) = read_u64_any(map, &["Id", "OrderId", "id", "orderId"]) else {
+                continue;
+            };
+            let Some(item_type_id) = read_string_any(map, &["ItemTypeId", "item", "ItemType"])
+            else {
+                continue;
+            };
+            let Some(location_id) = read_string_any(map, &["LocationId", "location", "Location"])
+            else {
+                continue;
+            };
+            let Some(unit_price_silver) =
+                read_u64_any(map, &["UnitPriceSilver", "price", "UnitPrice"])
+            else {
+                continue;
+            };
+            out.push(NormalizedMarketOrder {
+                order_id,
+                item_type_id,
+                location_id,
+                unit_price_silver,
+            });
         }
     }
     out
@@ -211,7 +231,10 @@ mod tests {
                 "LocationId".to_string(),
                 ProtocolValue::String("Bridgewatch".to_string()),
             ),
-            ("UnitPriceSilver".to_string(), ProtocolValue::UnsignedLong(1234)),
+            (
+                "UnitPriceSilver".to_string(),
+                ProtocolValue::UnsignedLong(1234),
+            ),
         ]);
 
         let params = BTreeMap::from([(

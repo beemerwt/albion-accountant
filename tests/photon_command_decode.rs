@@ -25,7 +25,10 @@ fn parses_transport_frame_and_command_envelope_from_pcapng() {
         })
         .collect::<Vec<_>>();
 
-    assert!(!decoded.is_empty(), "expected at least one decodable message");
+    assert!(
+        !decoded.is_empty(),
+        "expected at least one decodable message"
+    );
 }
 
 #[test]

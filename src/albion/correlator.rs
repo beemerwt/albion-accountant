@@ -81,10 +81,17 @@ impl TradeCorrelator {
         }
     }
 
-    pub fn observe_market_orders(&mut self, orders: impl IntoIterator<Item = MarketOrderCacheEntry>) {
+    pub fn observe_market_orders(
+        &mut self,
+        orders: impl IntoIterator<Item = MarketOrderCacheEntry>,
+    ) {
         for mut order in orders {
             order.observed_at = Instant::now();
-            if let Some(existing) = self.order_cache.iter_mut().find(|x| x.order_id == order.order_id) {
+            if let Some(existing) = self
+                .order_cache
+                .iter_mut()
+                .find(|x| x.order_id == order.order_id)
+            {
                 *existing = order;
             } else {
                 if self.order_cache.len() >= self.max_order_cache {
@@ -174,7 +181,10 @@ impl TradeCorrelator {
             return None;
         }
 
-        let order = self.order_cache.iter().rfind(|o| o.order_id == pending.order_id)?;
+        let order = self
+            .order_cache
+            .iter()
+            .rfind(|o| o.order_id == pending.order_id)?;
         let candidate = CorrelatedTradeCandidate {
             side: pending.side,
             order_id: pending.order_id,

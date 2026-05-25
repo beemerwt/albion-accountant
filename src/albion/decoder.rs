@@ -75,12 +75,19 @@ pub fn extract_market_transactions_stateful(
                 }
                 MarketResponseKind::AuctionBuyOffer => {
                     let success = response.return_code == 0;
-                    tracing::debug!(return_code = response.return_code, success, "market buy response observed");
+                    tracing::debug!(
+                        return_code = response.return_code,
+                        success,
+                        "market buy response observed"
+                    );
                     if let Some(tx) = correlator.observe_buy_response(success) {
                         tracing::debug!(?tx, "market buy correlation finalized transaction");
                         out.push(tx);
                     } else {
-                        tracing::debug!(success, "market buy response did not finalize a transaction");
+                        tracing::debug!(
+                            success,
+                            "market buy response did not finalize a transaction"
+                        );
                     }
                 }
                 MarketResponseKind::AuctionSellSpecificItemRequest
@@ -91,7 +98,10 @@ pub fn extract_market_transactions_stateful(
                         tracing::debug!(?tx, "market sell correlation finalized transaction");
                         out.push(tx);
                     } else {
-                        tracing::debug!(success, "market sell response did not finalize a transaction");
+                        tracing::debug!(
+                            success,
+                            "market sell response did not finalize a transaction"
+                        );
                     }
                 }
             }
@@ -115,7 +125,9 @@ pub fn extract_market_transactions_stateful(
             );
             match side {
                 TradeSide::Buy => correlator.observe_buy_request(request.order_id, request.amount),
-                TradeSide::Sell => correlator.observe_sell_request(request.order_id, request.amount),
+                TradeSide::Sell => {
+                    correlator.observe_sell_request(request.order_id, request.amount)
+                }
             }
         }
     }

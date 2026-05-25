@@ -3,14 +3,22 @@ mod support;
 use albion_accountant::albion::{
     correlator::{MarketOrderCacheEntry, TradeCorrelator, TradeSide},
     decoder::{CapturePacket, extract_udp_payload},
-    market_decode::{decode_market_request, decode_market_response, MarketRequestKind, MarketResponseKind},
+    market_decode::{
+        MarketRequestKind, MarketResponseKind, decode_market_request, decode_market_response,
+    },
     protocol::{commands::decode_command_envelope, transport::parse_udp_payload},
 };
-use support::load_pcapng_packets;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use support::load_pcapng_packets;
 
-use albion_accountant::albion::{ids, protocol::{events::decode_event_payload, operations::decode_operation_payload, protocol16::ProtocolValue}};
+use albion_accountant::albion::{
+    ids,
+    protocol::{
+        events::decode_event_payload, operations::decode_operation_payload,
+        protocol16::ProtocolValue,
+    },
+};
 
 #[derive(Debug)]
 struct Diagnostic {
@@ -28,10 +36,11 @@ struct Diagnostic {
     final_stage: String,
 }
 
-
 fn parse_enum_code_map(path: &str) -> BTreeMap<u16, String> {
     let mut out = BTreeMap::new();
-    let Ok(content) = fs::read_to_string(path) else { return out };
+    let Ok(content) = fs::read_to_string(path) else {
+        return out;
+    };
     for raw in content.lines() {
         let line = raw.split("//").next().unwrap_or("").trim();
         if line.is_empty() || !line.contains('=') {
@@ -40,7 +49,9 @@ fn parse_enum_code_map(path: &str) -> BTreeMap<u16, String> {
         let mut parts = line.split('=');
         let lhs = parts.next().unwrap_or("").trim().trim_end_matches(',');
         let rhs = parts.next().unwrap_or("").trim().trim_end_matches(',');
-        if lhs.is_empty() { continue; }
+        if lhs.is_empty() {
+            continue;
+        }
         if let Ok(code) = rhs.parse::<u16>() {
             out.insert(code, lhs.to_string());
         }
@@ -61,7 +72,15 @@ fn as_u16(value: &ProtocolValue) -> Option<u16> {
     }
 }
 
-fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::albion::transaction::MarketTransaction)>) {
+fn run_capture(
+    path: &str,
+) -> (
+    Diagnostic,
+    Vec<(
+        TradeSide,
+        albion_accountant::albion::transaction::MarketTransaction,
+    )>,
+) {
     let packets = load_pcapng_packets(path);
     let op_map = parse_enum_code_map("src/albion/operation_codes.rs");
     let event_map = parse_enum_code_map("src/albion/event_codes.rs");
@@ -85,22 +104,34 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
     let mut out = Vec::new();
 
     for packet in &packets {
-        let Ok(tuple) = extract_udp_payload(CapturePacket { link_type: 1, packet }) else { continue; };
+        let Ok(tuple) = extract_udp_payload(CapturePacket {
+            link_type: 1,
+            packet,
+        }) else {
+            continue;
+        };
         diag.udp_packet_count += 1;
         diag.final_stage = "UDP extraction".to_string();
 
-        let Ok(frames) = parse_udp_payload(tuple.payload) else { continue; };
+        let Ok(frames) = parse_udp_payload(tuple.payload) else {
+            continue;
+        };
         diag.albion_candidate_packet_count += 1;
         diag.final_stage = "Photon framing".to_string();
 
         for frame in frames {
-            let Ok(msg) = decode_command_envelope(&frame.body) else { continue; };
+            let Ok(msg) = decode_command_envelope(&frame.body) else {
+                continue;
+            };
             diag.decoded_message_count += 1;
             diag.final_stage = "message decoding".to_string();
 
             if let Ok(root) = decode_operation_payload(&msg.payload) {
                 if let Some(code) = root.get(ids::KEY_OP_CODE).and_then(as_u16) {
-                    let name = op_map.get(&code).cloned().unwrap_or_else(|| format!("UnknownOperationCode({code})"));
+                    let name = op_map
+                        .get(&code)
+                        .cloned()
+                        .unwrap_or_else(|| format!("UnknownOperationCode({code})"));
                     let key = format!("{code}:{name}");
                     if seen_ops.insert(key.clone()) {
                         diag.observed_operation_codes.push(key);
@@ -109,7 +140,10 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
             }
             if let Ok(root) = decode_event_payload(&msg.payload) {
                 if let Some(code) = root.get(ids::KEY_EVENT_CODE).and_then(as_u16) {
-                    let name = event_map.get(&code).cloned().unwrap_or_else(|| format!("UnknownEventCode({code})"));
+                    let name = event_map
+                        .get(&code)
+                        .cloned()
+                        .unwrap_or_else(|| format!("UnknownEventCode({code})"));
                     let key = format!("{code}:{name}");
                     if seen_events.insert(key.clone()) {
                         diag.observed_event_codes.push(key);
@@ -118,9 +152,11 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
             }
 
             if let Some(resp) = decode_market_response(&msg) {
-                diag.observed_responses.push(format!("{:?}/rc={}", resp.kind, resp.return_code));
+                diag.observed_responses
+                    .push(format!("{:?}/rc={}", resp.kind, resp.return_code));
                 match resp.kind {
-                    MarketResponseKind::AuctionGetOffers | MarketResponseKind::AuctionGetRequests => {
+                    MarketResponseKind::AuctionGetOffers
+                    | MarketResponseKind::AuctionGetRequests => {
                         for o in resp.orders {
                             correlator.observe_market_orders([MarketOrderCacheEntry {
                                 order_id: o.order_id,
@@ -132,31 +168,44 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
                         }
                     }
                     MarketResponseKind::AuctionBuyOffer => {
-                        if let Some(tx) = correlator.observe_buy_response(resp.return_code == 0) { out.push((TradeSide::Buy, tx)); }
+                        if let Some(tx) = correlator.observe_buy_response(resp.return_code == 0) {
+                            out.push((TradeSide::Buy, tx));
+                        }
                     }
-                    MarketResponseKind::AuctionSellSpecificItemRequest | MarketResponseKind::QuickSellAuctionSellAction => {
-                        if let Some(tx) = correlator.observe_sell_response(resp.return_code == 0) { out.push((TradeSide::Sell, tx)); }
+                    MarketResponseKind::AuctionSellSpecificItemRequest
+                    | MarketResponseKind::QuickSellAuctionSellAction => {
+                        if let Some(tx) = correlator.observe_sell_response(resp.return_code == 0) {
+                            out.push((TradeSide::Sell, tx));
+                        }
                     }
                 }
             }
 
             if let Some(req) = decode_market_request(&msg) {
-                diag.observed_requests.push(format!("{:?}/order={}/amount={}", req.kind, req.order_id, req.amount));
+                diag.observed_requests.push(format!(
+                    "{:?}/order={}/amount={}",
+                    req.kind, req.order_id, req.amount
+                ));
                 match req.kind {
                     MarketRequestKind::AuctionBuyOffer => {
                         if correlator.has_cached_order(req.order_id) {
                             correlator.observe_buy_request(req.order_id, req.amount);
-                            diag.correlator_input_records.push(format!("buy pending {} {}", req.order_id, req.amount));
+                            diag.correlator_input_records
+                                .push(format!("buy pending {} {}", req.order_id, req.amount));
                         } else {
-                            diag.correlator_rejected_records.push(format!("buy missing cache {}", req.order_id));
+                            diag.correlator_rejected_records
+                                .push(format!("buy missing cache {}", req.order_id));
                         }
                     }
-                    MarketRequestKind::AuctionSellSpecificItemRequest | MarketRequestKind::QuickSellAuctionSellAction => {
+                    MarketRequestKind::AuctionSellSpecificItemRequest
+                    | MarketRequestKind::QuickSellAuctionSellAction => {
                         if correlator.has_cached_order(req.order_id) {
                             correlator.observe_sell_request(req.order_id, req.amount);
-                            diag.correlator_input_records.push(format!("sell pending {} {}", req.order_id, req.amount));
+                            diag.correlator_input_records
+                                .push(format!("sell pending {} {}", req.order_id, req.amount));
                         } else {
-                            diag.correlator_rejected_records.push(format!("sell missing cache {}", req.order_id));
+                            diag.correlator_rejected_records
+                                .push(format!("sell missing cache {}", req.order_id));
                         }
                     }
                 }
@@ -164,7 +213,11 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
         }
     }
 
-    diag.final_stage = if out.is_empty() { "correlation".into() } else { "final operation construction".into() };
+    diag.final_stage = if out.is_empty() {
+        "correlation".into()
+    } else {
+        "final operation construction".into()
+    };
     (diag, out)
 }
 
@@ -179,5 +232,14 @@ fn decodes_full_market_quick_buy_capture_as_complete_quick_buy_operation() {
 fn decodes_full_market_quick_sell_capture_as_complete_quick_sell_operation() {
     let (diag, out) = run_capture("../../full_market_quick_sell.pcapng");
     let has_sell = out.iter().any(|(side, _)| *side == TradeSide::Sell);
+    assert!(has_sell, "{}", format!("{:#?}", diag));
+}
+
+#[test]
+fn decodes_quick_buy_and_sell_as_complete_operations() {
+    let (diag, out) = run_capture("../../quick_buy_and_sell.pcapng");
+    let has_buy = out.iter().any(|(side, _)| *side == TradeSide::Buy);
+    let has_sell = out.iter().any(|(side, _)| *side == TradeSide::Sell);
+    assert!(has_buy, "{}", format!("{:#?}", diag));
     assert!(has_sell, "{}", format!("{:#?}", diag));
 }

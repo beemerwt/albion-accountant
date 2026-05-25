@@ -308,7 +308,10 @@ async fn main() -> Result<()> {
                 .fragment_buffered_packets
                 .wrapping_add(outcome.summary.fragment_buffered_packets);
 
-            for txn in albion::decoder::extract_market_transactions_stateful(&mut correlator, &outcome.messages) {
+            for txn in albion::decoder::extract_market_transactions_stateful(
+                &mut correlator,
+                &outcome.messages,
+            ) {
                 println!(
                     "{} | {} | {} | {} | {}",
                     txn.location, txn.item, txn.quantity, txn.per_item_cost, txn.total_cost
@@ -609,7 +612,10 @@ async fn main() -> Result<()> {
                             .stateless_transactions_emitted
                             .wrapping_add(stateless_txs.len());
 
-                        let stateful_txs = albion::decoder::extract_market_transactions_stateful(&mut correlator, &messages);
+                        let stateful_txs = albion::decoder::extract_market_transactions_stateful(
+                            &mut correlator,
+                            &messages,
+                        );
                         counters.stateful_transactions_emitted = counters
                             .stateful_transactions_emitted
                             .wrapping_add(stateful_txs.len());
@@ -617,9 +623,8 @@ async fn main() -> Result<()> {
                         for txn in stateful_txs {
                             counters.mapped_transactions_emitted =
                                 counters.mapped_transactions_emitted.wrapping_add(1);
-                            counters.correlated_transactions_queued = counters
-                                .correlated_transactions_queued
-                                .wrapping_add(1);
+                            counters.correlated_transactions_queued =
+                                counters.correlated_transactions_queued.wrapping_add(1);
                             debug!(interface = %interface, ?txn, "decoded correlated transaction event");
                             let _ = capture_tx.blocking_send(txn);
                         }
