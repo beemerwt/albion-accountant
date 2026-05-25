@@ -7,6 +7,10 @@ use albion_accountant::albion::{
     protocol::{commands::decode_command_envelope, transport::parse_udp_payload},
 };
 use support::load_pcapng_packets;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+
+use albion_accountant::albion::{ids, protocol::{events::decode_event_payload, operations::decode_operation_payload, protocol16::ProtocolValue}};
 
 #[derive(Debug)]
 struct Diagnostic {
@@ -17,13 +21,52 @@ struct Diagnostic {
     decoded_message_count: usize,
     observed_requests: Vec<String>,
     observed_responses: Vec<String>,
+    observed_operation_codes: Vec<String>,
+    observed_event_codes: Vec<String>,
     correlator_input_records: Vec<String>,
     correlator_rejected_records: Vec<String>,
     final_stage: String,
 }
 
+
+fn parse_enum_code_map(path: &str) -> BTreeMap<u16, String> {
+    let mut out = BTreeMap::new();
+    let Ok(content) = fs::read_to_string(path) else { return out };
+    for raw in content.lines() {
+        let line = raw.split("//").next().unwrap_or("").trim();
+        if line.is_empty() || !line.contains('=') {
+            continue;
+        }
+        let mut parts = line.split('=');
+        let lhs = parts.next().unwrap_or("").trim().trim_end_matches(',');
+        let rhs = parts.next().unwrap_or("").trim().trim_end_matches(',');
+        if lhs.is_empty() { continue; }
+        if let Ok(code) = rhs.parse::<u16>() {
+            out.insert(code, lhs.to_string());
+        }
+    }
+    out
+}
+
+fn as_u16(value: &ProtocolValue) -> Option<u16> {
+    match value {
+        ProtocolValue::Byte(v) | ProtocolValue::UnsignedByte(v) => Some(u16::from(*v)),
+        ProtocolValue::Short(v) => u16::try_from(*v).ok(),
+        ProtocolValue::UnsignedShort(v) => Some(*v),
+        ProtocolValue::Int(v) => u16::try_from(*v).ok(),
+        ProtocolValue::UnsignedInt(v) => u16::try_from(*v).ok(),
+        ProtocolValue::Long(v) => u16::try_from(*v).ok(),
+        ProtocolValue::UnsignedLong(v) => u16::try_from(*v).ok(),
+        _ => None,
+    }
+}
+
 fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::albion::transaction::MarketTransaction)>) {
     let packets = load_pcapng_packets(path);
+    let op_map = parse_enum_code_map("src/albion/operation_codes.rs");
+    let event_map = parse_enum_code_map("src/albion/event_codes.rs");
+    let mut seen_ops = BTreeSet::new();
+    let mut seen_events = BTreeSet::new();
     let mut diag = Diagnostic {
         pcapng_filename: path.to_string(),
         packet_count_read: packets.len(),
@@ -32,6 +75,8 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
         decoded_message_count: 0,
         observed_requests: vec![],
         observed_responses: vec![],
+        observed_operation_codes: vec![],
+        observed_event_codes: vec![],
         correlator_input_records: vec![],
         correlator_rejected_records: vec![],
         final_stage: "pcap read".to_string(),
@@ -52,6 +97,25 @@ fn run_capture(path: &str) -> (Diagnostic, Vec<(TradeSide, albion_accountant::al
             let Ok(msg) = decode_command_envelope(&frame.body) else { continue; };
             diag.decoded_message_count += 1;
             diag.final_stage = "message decoding".to_string();
+
+            if let Ok(root) = decode_operation_payload(&msg.payload) {
+                if let Some(code) = root.get(ids::KEY_OP_CODE).and_then(as_u16) {
+                    let name = op_map.get(&code).cloned().unwrap_or_else(|| format!("UnknownOperationCode({code})"));
+                    let key = format!("{code}:{name}");
+                    if seen_ops.insert(key.clone()) {
+                        diag.observed_operation_codes.push(key);
+                    }
+                }
+            }
+            if let Ok(root) = decode_event_payload(&msg.payload) {
+                if let Some(code) = root.get(ids::KEY_EVENT_CODE).and_then(as_u16) {
+                    let name = event_map.get(&code).cloned().unwrap_or_else(|| format!("UnknownEventCode({code})"));
+                    let key = format!("{code}:{name}");
+                    if seen_events.insert(key.clone()) {
+                        diag.observed_event_codes.push(key);
+                    }
+                }
+            }
 
             if let Some(resp) = decode_market_response(&msg) {
                 diag.observed_responses.push(format!("{:?}/rc={}", resp.kind, resp.return_code));
