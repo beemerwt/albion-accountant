@@ -59,6 +59,14 @@ fn pcapng_covers_full_market_pipeline() {
 
 #[test]
 fn pcapng_replay_emits_completed_market_transactions() {
+    use std::collections::BTreeMap;
+
+    let mut decoded_events = 0usize;
+    let mut decoded_operations = 0usize;
+    let mut all_messages = Vec::new();
+    let mut valid_envelopes = 0usize;
+    let mut payload_candidates = 0usize;
+    let mut replay_debug_summaries: Vec<(String, usize, usize, usize, BTreeMap<u8, usize>)> = Vec::new();
     #[derive(Default)]
     struct CaptureCounts {
         envelopes: usize,
@@ -109,9 +117,18 @@ fn pcapng_replay_emits_completed_market_transactions() {
             "expected at least one fully decoded command envelope in {capture}"
         );
         all_messages.extend(messages.clone());
+        let mut unsupported_message_type_count = 0usize;
+        let mut event_decode_failed_count = 0usize;
+        let mut operation_decode_failed_count = 0usize;
+        let mut message_type_histogram: BTreeMap<u8, usize> = BTreeMap::new();
 
         // Stage A: pcap transport/envelope accounting.
         for message in &messages {
+            *message_type_histogram.entry(message.message_type).or_insert(0) += 1;
+
+            if !matches!(message.message_type, 0x02 | 0x03 | 0x04) {
+                unsupported_message_type_count += 1;
+                continue;
             match message.message_type {
                 0x02 => counts.type2 += 1,
                 0x03 => counts.type3 += 1,
@@ -148,6 +165,55 @@ fn pcapng_replay_emits_completed_market_transactions() {
                     counts.op_decoded += 1;
                     replay_decoded_operations += 1;
                 }
+                DecodeProbe::UnsupportedCommandType { .. } => {
+                    unsupported_message_type_count += 1;
+                }
+                DecodeProbe::EventDecodeFailed => {
+                    event_decode_failed_count += 1;
+                    if message.message_type == 0x04 {
+                        if let Ok(event_map) = decode_event_payload(&message.payload) {
+                            decoded_events += 1;
+                            eprintln!(
+                                "[decoded-event-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, event_top_level_keys={}",
+                                capture,
+                                message.channel,
+                                u16::from(message.command_type),
+                                message.message_type,
+                                message.reliable_sequence,
+                                message.payload_length,
+                                event_map.len()
+                            );
+                        }
+                    } else if let Ok(op_map) = decode_operation_payload(&message.payload) {
+                        operation_decode_failed_count += 1;
+                        decoded_operations += 1;
+                        eprintln!(
+                            "[decoded-operation-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, operation_top_level_keys={}",
+                            capture,
+                            message.channel,
+                            u16::from(message.command_type),
+                            message.message_type,
+                            message.reliable_sequence,
+                            message.payload_length,
+                            op_map.len()
+                        );
+                    } else {
+                        operation_decode_failed_count += 1;
+                    }
+                }
+                DecodeProbe::OperationDecodeFailed => {
+                    operation_decode_failed_count += 1;
+                }
+            }
+        }
+
+        replay_debug_summaries.push((
+            capture.to_string(),
+            unsupported_message_type_count,
+            event_decode_failed_count,
+            operation_decode_failed_count,
+            message_type_histogram,
+        ));
                 DecodeProbe::UnsupportedCommandType { .. }
                 | DecodeProbe::EventDecodeFailed
                 | DecodeProbe::OperationDecodeFailed => {}
@@ -204,6 +270,29 @@ fn pcapng_replay_emits_completed_market_transactions() {
             fixture_op_decoded
         );
     }
+
+    for (
+        capture,
+        unsupported_message_type_count,
+        event_decode_failed_count,
+        operation_decode_failed_count,
+        message_type_histogram,
+    ) in &replay_debug_summaries
+    {
+        eprintln!(
+            "[replay-decode-debug] capture={}, unsupported_message_type_count={}, event_decode_failed_count={}, operation_decode_failed_count={}, message_type_histogram={:?}",
+            capture,
+            unsupported_message_type_count,
+            event_decode_failed_count,
+            operation_decode_failed_count,
+            message_type_histogram
+        );
+    }
+
+    assert!(
+        payload_candidates > 0,
+        "expected replay captures to include payload-candidate messages (types 0x02/0x03/0x04)"
+    );
 
     eprintln!(
         "[replay-summary] envelopes={}, type2={}, type3={}, type4={}, event_decoded={}, op_decoded={}",
