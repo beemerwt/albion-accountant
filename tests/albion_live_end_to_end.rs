@@ -59,11 +59,20 @@ fn pcapng_covers_full_market_pipeline() {
 
 #[test]
 fn pcapng_replay_emits_completed_market_transactions() {
-    let mut decoded_events = 0usize;
-    let mut decoded_operations = 0usize;
+    #[derive(Default)]
+    struct CaptureCounts {
+        envelopes: usize,
+        type2: usize,
+        type3: usize,
+        type4: usize,
+        event_decoded: usize,
+        op_decoded: usize,
+    }
+
     let mut all_messages = Vec::new();
-    let mut valid_envelopes = 0usize;
-    let mut payload_candidates = 0usize;
+    let mut total_counts = CaptureCounts::default();
+    let mut replay_decoded_events = 0usize;
+    let mut replay_decoded_operations = 0usize;
 
     for capture in [
         "../../quick_buy_and_sell.pcapng",
@@ -74,6 +83,7 @@ fn pcapng_replay_emits_completed_market_transactions() {
         assert!(!packets.is_empty(), "pcapng must contain packets: {capture}");
 
         let mut messages = Vec::new();
+        let mut counts = CaptureCounts::default();
         for packet in &packets {
             let Ok(tuple) = extract_udp_payload(CapturePacket {
                 link_type: 1,
@@ -88,14 +98,7 @@ fn pcapng_replay_emits_completed_market_transactions() {
 
             for frame in frames {
                 if let Ok(msg) = decode_command_envelope(&frame.body) {
-                    valid_envelopes += 1;
-                    eprintln!(
-                        "[validated-envelope] capture={}, command_type={}, channel={}, reliable_sequence={}",
-                        capture,
-                        u16::from(msg.command_type),
-                        msg.channel,
-                        msg.reliable_sequence
-                    );
+                    counts.envelopes += 1;
                     messages.push(msg);
                 }
             }
@@ -107,119 +110,109 @@ fn pcapng_replay_emits_completed_market_transactions() {
         );
         all_messages.extend(messages.clone());
 
+        // Stage A: pcap transport/envelope accounting.
         for message in &messages {
-            if !matches!(message.message_type, 0x02 | 0x03 | 0x04) {
-                continue;
+            match message.message_type {
+                0x02 => counts.type2 += 1,
+                0x03 => counts.type3 += 1,
+                0x04 => counts.type4 += 1,
+                _ => {}
             }
-            payload_candidates += 1;
+        }
 
+        let capture_candidates = counts.type2 + counts.type3 + counts.type4;
+        assert!(
+            capture_candidates > 0,
+            "Stage A failed for {capture}: expected at least one protocol message candidate (types 0x02/0x03/0x04), got envelopes={}, type2={}, type3={}, type4={}",
+            counts.envelopes,
+            counts.type2,
+            counts.type3,
+            counts.type4
+        );
+
+        // Stage B: protocol payload decode from replay candidate messages only.
+        for message in messages
+            .iter()
+            .filter(|m| matches!(m.message_type, 0x02 | 0x03 | 0x04))
+        {
             match probe_message(message) {
                 DecodeProbe::EventDecoded {
-                    code,
-                    key_count,
-                    encrypted_like,
                     ..
                 } => {
-                    decoded_events += 1;
-                    eprintln!(
-                        "[decoded-event] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, event_code={}, param_keys={}, encrypted_like={}",
-                        capture,
-                        message.channel,
-                        u16::from(message.command_type),
-                        message.message_type,
-                        message.reliable_sequence,
-                        message.payload_length,
-                        code,
-                        key_count,
-                        encrypted_like
-                    );
+                    counts.event_decoded += 1;
+                    replay_decoded_events += 1;
                 }
                 DecodeProbe::OperationDecoded {
-                    op_code,
-                    return_code,
-                    key_count,
-                    encrypted_like,
                     ..
                 } => {
-                    decoded_operations += 1;
-                    eprintln!(
-                        "[decoded-operation] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, op_code={}, return_code={}, param_keys={}, encrypted_like={}",
-                        capture,
-                        message.channel,
-                        u16::from(message.command_type),
-                        message.message_type,
-                        message.reliable_sequence,
-                        message.payload_length,
-                        op_code,
-                        return_code,
-                        key_count,
-                        encrypted_like
-                    );
+                    counts.op_decoded += 1;
+                    replay_decoded_operations += 1;
                 }
                 DecodeProbe::UnsupportedCommandType { .. }
                 | DecodeProbe::EventDecodeFailed
-                | DecodeProbe::OperationDecodeFailed => {
-                    if message.message_type == 0x04 {
-                        if let Ok(event_map) = decode_event_payload(&message.payload) {
-                            decoded_events += 1;
-                            eprintln!(
-                                "[decoded-event-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, event_top_level_keys={}",
-                                capture,
-                                message.channel,
-                                u16::from(message.command_type),
-                                message.message_type,
-                                message.reliable_sequence,
-                                message.payload_length,
-                                event_map.len()
-                            );
-                        }
-                    } else if let Ok(op_map) = decode_operation_payload(&message.payload) {
-                        decoded_operations += 1;
-                        eprintln!(
-                            "[decoded-operation-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, operation_top_level_keys={}",
-                            capture,
-                            message.channel,
-                            u16::from(message.command_type),
-                            message.message_type,
-                            message.reliable_sequence,
-                            message.payload_length,
-                            op_map.len()
-                        );
-                    }
-                }
+                | DecodeProbe::OperationDecodeFailed => {}
             }
         }
+
+        total_counts.envelopes += counts.envelopes;
+        total_counts.type2 += counts.type2;
+        total_counts.type3 += counts.type3;
+        total_counts.type4 += counts.type4;
+        total_counts.event_decoded += counts.event_decoded;
+        total_counts.op_decoded += counts.op_decoded;
+
+        eprintln!(
+            "[capture-summary] capture={}, envelopes={}, type2={}, type3={}, type4={}, event_decoded={}, op_decoded={}",
+            capture,
+            counts.envelopes,
+            counts.type2,
+            counts.type3,
+            counts.type4,
+            counts.event_decoded,
+            counts.op_decoded
+        );
     }
 
     assert!(
-        valid_envelopes > 0,
-        "expected replay captures to produce at least one valid command envelope"
+        total_counts.envelopes > 0,
+        "Stage A failed: expected replay captures to produce at least one valid command envelope"
+    );
+    assert!(
+        replay_decoded_events + replay_decoded_operations > 0,
+        "Stage B failed: no EventDecoded/OperationDecoded from replay candidates. totals: envelopes={}, type2={}, type3={}, type4={}, event_decoded={}, op_decoded={}",
+        total_counts.envelopes,
+        total_counts.type2,
+        total_counts.type3,
+        total_counts.type4,
+        total_counts.event_decoded,
+        total_counts.op_decoded
     );
 
+    // Stage C: fixture-only parser validation (kept separate from replay counters).
     let fixture = load_hex_fixture("market_packet_valid.hex");
-    if let Ok(event_map) = decode_event_payload(&fixture) {
-        decoded_events += 1;
+    let fixture_event_decoded = decode_event_payload(&fixture).is_ok();
+    let fixture_op_decoded = decode_operation_payload(&fixture).is_ok();
+    if fixture_event_decoded {
         eprintln!(
-            "[fixture-decoded-event] fixture=market_packet_valid.hex, event_top_level_keys={}",
-            event_map.len()
+            "[fixture-summary] fixture=market_packet_valid.hex, event_decoded=true, op_decoded={}",
+            fixture_op_decoded
         );
     }
-    if let Ok(op_map) = decode_operation_payload(&fixture) {
-        decoded_operations += 1;
+    if !fixture_event_decoded {
         eprintln!(
-            "[fixture-decoded-operation] fixture=market_packet_valid.hex, operation_top_level_keys={}",
-            op_map.len()
+            "[fixture-summary] fixture=market_packet_valid.hex, event_decoded=false, op_decoded={}",
+            fixture_op_decoded
         );
     }
-
-    assert!(
-        payload_candidates > 0,
-        "expected replay captures to include payload-candidate messages (types 0x02/0x03/0x04)"
-    );
 
     eprintln!(
-        "[payload-validation-summary] candidates={}, decoded_events={}, decoded_operations={}",
-        payload_candidates, decoded_events, decoded_operations
+        "[replay-summary] envelopes={}, type2={}, type3={}, type4={}, event_decoded={}, op_decoded={}",
+        total_counts.envelopes,
+        total_counts.type2,
+        total_counts.type3,
+        total_counts.type4,
+        total_counts.event_decoded,
+        total_counts.op_decoded
     );
 
     let mut correlator = TradeCorrelator::default();
