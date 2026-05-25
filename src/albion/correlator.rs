@@ -10,17 +10,6 @@ pub enum TradeSide {
 }
 
 #[derive(Debug, Clone)]
-pub struct CorrelatedTradeCandidate {
-    pub side: TradeSide,
-    pub order_id: u64,
-    pub location: String,
-    pub item_type_id: String,
-    pub unit_price_silver: u64,
-    pub amount: u32,
-    pub observed_at: Instant,
-}
-
-#[derive(Debug, Clone)]
 pub struct MarketOrderCacheEntry {
     pub order_id: u64,
     pub location: String,
@@ -148,20 +137,14 @@ impl TradeCorrelator {
             .wrapping_add(before_pending.saturating_sub(self.pending.len()));
     }
 
+    #[cfg(test)]
     pub fn stats(&self) -> &CorrelatorStats {
         &self.stats
     }
 
+    #[cfg(test)]
     pub fn pending_len(&self) -> usize {
         self.pending.len()
-    }
-
-    pub fn cache_len(&self) -> usize {
-        self.order_cache.len()
-    }
-
-    pub fn has_cached_order(&self, order_id: u64) -> bool {
-        self.order_cache.iter().any(|o| o.order_id == order_id)
     }
 
     fn push_pending(&mut self, pending: PendingTrade) {
@@ -185,20 +168,11 @@ impl TradeCorrelator {
             .order_cache
             .iter()
             .rfind(|o| o.order_id == pending.order_id)?;
-        let candidate = CorrelatedTradeCandidate {
-            side: pending.side,
-            order_id: pending.order_id,
-            location: order.location.clone(),
-            item_type_id: order.item_type_id.clone(),
-            unit_price_silver: order.unit_price_silver,
-            amount: pending.amount,
-            observed_at: Instant::now(),
-        };
         let tx = MarketTransaction::new(
-            candidate.location,
-            candidate.item_type_id,
-            candidate.amount,
-            candidate.unit_price_silver,
+            order.location.clone(),
+            order.item_type_id.clone(),
+            pending.amount,
+            order.unit_price_silver,
             None,
         )
         .ok()?;

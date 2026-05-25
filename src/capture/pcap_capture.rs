@@ -2,7 +2,9 @@ use std::path::Path;
 
 #[cfg(feature = "pcap")]
 use anyhow::Context;
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(not(feature = "pcap"))]
+use anyhow::bail;
 #[cfg(feature = "pcap")]
 use tracing::info;
 use tracing::warn;
@@ -109,14 +111,6 @@ pub fn pick_interface(_configured: Vec<String>) -> Result<String> {
     bail!("pcap support is disabled at compile time")
 }
 
-#[cfg(feature = "pcap")]
-pub fn open_capture_file(path: &Path) -> Result<pcap::Capture<pcap::Offline>> {
-    pcap::Capture::from_file(path)
-        .with_context(|| format!("failed to open capture file {}", path.display()))
-}
-
-#[cfg(not(feature = "pcap"))]
-pub struct OfflineCaptureStub;
 #[cfg(not(feature = "pcap"))]
 pub struct ActiveCaptureStub;
 #[cfg(not(feature = "pcap"))]
@@ -126,15 +120,6 @@ pub struct CapturePacketStub {
 #[cfg(not(feature = "pcap"))]
 pub struct DataLinkStub(pub i32);
 #[cfg(not(feature = "pcap"))]
-impl OfflineCaptureStub {
-    pub fn get_datalink(&self) -> DataLinkStub {
-        DataLinkStub(1)
-    }
-    pub fn next_packet(&mut self) -> Result<CapturePacketStub> {
-        bail!("pcap support is disabled at compile time")
-    }
-}
-#[cfg(not(feature = "pcap"))]
 impl ActiveCaptureStub {
     pub fn get_datalink(&self) -> DataLinkStub {
         DataLinkStub(1)
@@ -143,11 +128,6 @@ impl ActiveCaptureStub {
         bail!("pcap support is disabled at compile time")
     }
 }
-#[cfg(not(feature = "pcap"))]
-pub fn open_capture_file(_path: &Path) -> Result<OfflineCaptureStub> {
-    bail!("pcap support is disabled at compile time")
-}
-
 #[cfg(feature = "pcap")]
 pub fn open_capture_handle(
     interface: &str,

@@ -1,24 +1,63 @@
 # albion-accountant
 
-CLI tool that passively captures Albion Online market transaction traffic and appends transactions to Google Sheets.
+CLI tool that passively captures Albion Online market traffic, decodes finalized trade rows, and appends them to Google Sheets.
 
-## Linux dependencies
+## Safety
 
-- `libpcap-dev` (Debian/Ubuntu)
-- privileges required for packet capture (run as root or grant `cap_net_raw,cap_net_admin`)
+This app only observes packets. It does not modify, inject into, or interfere with the Albion Online client.
 
-## Safety note
+## Linux Dependencies
 
-This app only passively observes packets. It does **not** modify, inject into, or interfere with the Albion Online client.
+- `libpcap-dev` on Debian/Ubuntu
+- packet-capture privileges, either root or `cap_net_raw,cap_net_admin`
 
-## Google OAuth 2.0 (Desktop app / installed app) setup
+## Decode Model
 
-1. In Google Cloud / Google Auth Platform, enable the **Google Sheets API**.
+The supported decode model is intentionally narrow and Python-equivalent:
+
+1. Convert every source into an `IngressPacket`:
+   - packet number
+   - source endpoint, `ip:port`
+   - destination endpoint, `ip:port`
+   - UDP payload bytes
+2. Feed only `IngressPacket` into `DecodeEngine`.
+3. Parse Photon UDP command framing and Protocol16 typed payloads.
+4. Convert decoded operation/event packets into semantic trade state.
+5. Emit only finalized `MarketTransaction` rows for upload.
+
+There is no runtime decode-mode flag and no legacy text/regex/JSON fallback decoder. Live capture and pcapng replay use the same engine after the ingress adapter boundary.
+
+## Live Capture Path
+
+Runtime live capture is:
+
+```text
+pcap capture backend -> live_adapter -> DecodeEngine -> TradeSemanticMapper -> SheetsClient
+```
+
+The capture filter controls which packets are observed; it does not select a decoder implementation.
+
+## Replay Path
+
+Replay mode parses pcapng bytes manually:
+
+```text
+pcapng file bytes -> pcapng_adapter -> DecodeEngine -> TradeSemanticMapper -> dry-run rows or SheetsClient
+```
+
+Use replay for fixture parity and deterministic local debugging:
+
+```bash
+cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
+```
+
+## Google OAuth Setup
+
+1. In Google Cloud / Google Auth Platform, enable the Google Sheets API.
 2. Configure the OAuth consent screen if prompted.
-3. Create an **OAuth 2.0 Client ID**.
-4. Choose **Desktop app** (installed app).
-5. Download the client secret JSON file.
-6. Save it locally:
+3. Create an OAuth 2.0 Client ID for a Desktop app.
+4. Download the client secret JSON file.
+5. Save it locally:
 
 ```bash
 mkdir -p ~/.config/albion-accountant
@@ -26,7 +65,7 @@ mv ~/Downloads/google-credentials.json ~/.config/albion-accountant/google-creden
 chmod 600 ~/.config/albion-accountant/google-credentials.json
 ```
 
-7. Export environment variables:
+6. Export environment variables:
 
 ```bash
 export ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET="$HOME/.config/albion-accountant/google-credentials.json"
@@ -38,36 +77,22 @@ export ALBION_ACCOUNTANT_INTERFACE="eth0"
 
 Spreadsheet ID comes from URLs like:
 
-`https://docs.google.com/spreadsheets/d/SPREADSHEET_ID_HERE/edit#gid=0`
+```text
+https://docs.google.com/spreadsheets/d/SPREADSHEET_ID_HERE/edit#gid=0
+```
 
-Use only the `SPREADSHEET_ID_HERE` part. `gid=0` is a sheet/tab identifier, not the spreadsheet ID.
-
-## Decoder support
-
-The decoder supports **Photon command envelopes with Protocol16-typed payloads only**.
-
-- Supported: Photon `Event` and `OperationResponse` messages decoded through Protocol16.
-- Removed: legacy regex/JSON text fallback decoding paths.
-- There are no runtime config/env decode-mode switches; decoding is protocol-only.
-
-## Troubleshooting capture conditions
-
-If you do not see transactions, verify these capture prerequisites:
-
-- **IPv4/UDP visibility**: traffic must be visible as IPv4 UDP frames on the selected interface.
-- **Privileges**: run with sufficient packet-capture privileges (root or `cap_net_raw,cap_net_admin`).
-- **Correct interface**: choose the interface that carries Albion traffic (confirm with `--list-interfaces`).
+Use only `SPREADSHEET_ID_HERE`. `gid=0` is the sheet/tab identifier, not the spreadsheet ID.
 
 ## Usage
 
 ```bash
 cargo run -- --list-interfaces
 cargo run -- --dry-run --interface eth0
-cargo run -- --pcap-file ./captures/sample.pcapng
+cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
 cargo run -- --interface eth0
 ```
 
-Or explicitly pass all values:
+Or explicitly pass all Google values:
 
 ```bash
 cargo run -- \
@@ -78,35 +103,20 @@ cargo run -- \
   --sheet-name Sheet1
 ```
 
-- First non-dry-run execution opens a browser for Google authorization.
-- After consent, tokens are saved to the token cache file.
-- Later runs reuse cached tokens automatically.
-
 Headers are auto-created if missing:
 
-`Location | Item | Quantity | Per Item Cost | Total Cost`
-
-## Testing
-
-Available test suites:
-
-- **Unit tests (library + binary crates):** `cargo test --lib --bins`
-- **Integration tests:**
-  - `cargo test --test albion_live_end_to_end`
-  - `cargo test --test albion_live_replay`
-  - `cargo test --test market_mapping`
-  - `cargo test --test photon_command_decode`
-  - `cargo test --test protocol16_decode`
-- **Doc tests:** `cargo test --doc`
-
-Run everything at once:
-
-```bash
-cargo test
+```text
+Location | Item | Quantity | Per Item Cost | Total Cost
 ```
 
-To list all discovered tests without running them:
+## Tests
+
+CI runs only the supported parity and upload-contract surface:
 
 ```bash
-cargo test -- --list
+cargo test --test replay_parity --test sheets_contract
 ```
+
+Replay parity compares manually parsed pcapng bytes against golden JSON summaries for packet statuses, message types, operation/event code names, trade state transitions, and final upload rows.
+
+Local development can still run broader unit tests with `cargo test`, but the required compatibility gate is the parity suite above.

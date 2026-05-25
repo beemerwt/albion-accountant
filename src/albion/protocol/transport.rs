@@ -194,23 +194,6 @@ fn log_incomplete(
     warn!(offset, needed, remaining, state, first_bytes = %first_bytes, payload_len = payload.len(), "transport parse incomplete");
 }
 
-pub fn parse_udp_payload(payload: &[u8]) -> Result<Vec<FramedPayload>, DecodeError> {
-    parse_udp_payload_incremental(payload).map_err(|err| match err {
-        FrameParseError::Incomplete {
-            offset,
-            needed,
-            remaining,
-            state,
-        } => DecodeError::Transport {
-            offset,
-            reason: format!(
-                "incomplete frame ({state}): needed {needed} bytes, only {remaining} remain"
-            ),
-        },
-        FrameParseError::Invalid(inner) => inner,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

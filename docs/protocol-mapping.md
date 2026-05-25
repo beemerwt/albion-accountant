@@ -1,51 +1,50 @@
-# Albion market protocol mapping
+# Protocol Mapping
 
-This document aligns the local decode pipeline with AlbionDataAvalonia's parser/handler stages so traces can be compared stage-by-stage.
+This document describes the supported decode model after the legacy decoder removal.
 
-## Stage mapping table
+## Python-Equivalent Model
 
-| Internal stage | AlbionDataAvalonia analogue | Notes / diagnostics emitted |
-|---|---|---|
-| `capture::pcap_capture` packet ingest | capture | Interface-level packet acceptance/drop counters and summary metrics in `main.rs`. |
-| `decoder::extract_udp_payload` | packet parse | L2/L3/L4 parse drop reason classification (`NonUdp`, truncation, unsupported ether type). |
-| `session::PacketProcessor::ingest_packet` + `transport::parse_udp_payload_incremental` | photon command framing | Per-command structured diagnostics: command kind (`reliable`, `unreliable`, `fragment`, `disconnect`, `event`, `operation_response`), channel, reliable sequence, payload length, encrypted-like prefix heuristic, plus sequence/fragment behavior summaries (duplicate suppression, queue drops, small-gap advance, large-gap resync, fragment buffering). |
-| `protocol::commands::decode_command_envelope` + `decoder::probe_message` | protocol16 decode | Message-type diagnostics (`request`/`response`/`event`/`unknown`), decode success/failure probes, market opcode observations, and unsupported command-type tracking. |
-| `market_mapper::{map_event_to_transaction,map_response_to_transaction}` | market mapping | Maps Protocol16 dictionaries/hashtables into `MarketTransaction` domain rows using observed operation-code/field conventions. |
+The Rust runtime mirrors the Python replay model at the ingress boundary:
 
-## Operation codes (observed)
+```text
+source bytes -> IngressPacket -> DecodeEngine -> DecodedPacket -> TradeSemanticMapper -> MarketTransaction
+```
 
-From `AlbionDataAvalonia.Shared/OperationCodes.cs`:
+`IngressPacket` is the only input record the decode layer accepts. It contains packet number, source endpoint, destination endpoint, and UDP payload bytes. This keeps live capture and pcapng replay behavior equivalent after packet ingress.
 
-- `AuctionGetOffers` = `75` (`0x4b`)
-- `AuctionGetRequests` = `76` (`0x4c`)
+## Stage Mapping
 
-These are handled by:
+| Stage | Rust module | Responsibility | Parity assertion |
+|---|---|---|---|
+| Source ingress | `live_adapter`, `pcapng_adapter` | Convert live packets or pcapng bytes into `IngressPacket`. | Ingress packet count and non-empty UDP payloads. |
+| Photon framing | `albion::session`, `albion::protocol::transport` | Parse Photon UDP command packets, handle incomplete fragments, sequence gaps, duplicate suppression, and command diagnostics. | Packet status, command kind, and message-type histograms. |
+| Command envelope | `albion::protocol::commands` | Normalize command body into `PhotonMessage` metadata and payload bytes. | Message type and command diagnostic counts. |
+| Protocol16 decode | `albion::protocol::{events,operations,protocol16}` | Decode event and operation payload maps. | Operation/event code IDs and generated enum names. |
+| Semantic mapping | `trade_mapping::semantics` | Cache listing orders, stage buy/sell requests, confirm or clear pending trades on responses, and map market notification events when they contain full row data. | Golden trade state transitions and final transaction rows. |
+| Upload contract | `sheets::row`, `sheets::client` | Preserve the five-column row schema and append finalized rows. | Minimal Sheets row contract and mocked uploader boundary. |
 
-- `AuctionGetOffersResponseHandler : base((int)OperationCodes.AuctionGetOffers)`
-- `AuctionGetRequestsResponseHandler : base((int)OperationCodes.AuctionGetRequests)`
+## Live Capture Path
 
-## Event codes
+```text
+pcap backend -> live_adapter -> DecodeEngine -> TradeSemanticMapper -> SheetsClient
+```
 
-No event-code path is used by AlbionDataAvalonia market order upload logic. It is operation-response driven.
+Capture filter flags only affect packet selection before `live_adapter`. They do not select a decode implementation.
 
-## Required field names
+## Pcapng Fixture Parity
 
-From `AlbionDataAvalonia.Network.Models/MarketOrder.cs` and response parsers:
+Fixture tests read `.pcapng` files directly with `fs::read` and pass bytes into `pcapng_adapter::parse_pcapng`. The `pcap` capture library is not involved in fixture decode tests.
 
-- `LocationId` (string)
-- `ItemTypeId` (string)
-- `Amount` (uint)
-- `UnitPriceSilver` (ulong)
+Parity tests compare JSON golden files under `tests/fixtures`:
 
-The response payload parameter key used by AlbionDataAvalonia for orders is:
+- `quick_buy_and_sell.decoded_summary.expected.json`: packet statuses, command/message types, decoded packet counts, operation/event code names, and emitted transaction rows for a real capture.
+- `semantic_trade_flow.expected.json`: synthetic decoded packet stream covering cached orders, staged requests, confirmed/cleared responses, market notification rows, and final upload rows.
 
-- param key `0` -> `IEnumerable<string>` serialized `MarketOrder` entries.
+## Operation And Event Names
 
-## Compatibility aliases retained in this repository
+Operation and event names are generated from the Rust enum source files:
 
-For backwards compatibility with existing fixtures in this repository, the mapper accepts these aliases only:
+- `src/albion/operation_codes.rs`
+- `src/albion/event_codes.rs`
 
-- `location` -> `LocationId`
-- `item` -> `ItemTypeId`
-- `qty` -> `Amount`
-- `price` -> `UnitPriceSilver`
+The parity suite asserts both numeric codes and generated names so enum drift is visible in golden diffs.

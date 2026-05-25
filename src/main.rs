@@ -1,14 +1,9 @@
-mod albion;
-mod capture;
-mod config;
-mod sheets;
-
 use std::{
     collections::HashSet,
     fs,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -16,9 +11,11 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    albion::{ids, transaction::MarketTransaction},
+use albion_accountant::{
+    albion::{self, transaction::MarketTransaction},
+    capture,
     config::Config,
+    decode_engine, live_adapter, pcapng_adapter, sheets,
 };
 
 #[derive(Default)]
@@ -36,7 +33,6 @@ struct PipelineCounters {
     operation_decode_failures: usize,
     successful_decodes: usize,
     mapped_transactions_emitted: usize,
-    stateless_transactions_emitted: usize,
     stateful_transactions_emitted: usize,
     correlated_transactions_queued: usize,
     reliable_commands_seen: usize,
@@ -168,110 +164,54 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
 
     if let Some(pcap_file) = &config.pcap_file {
-        let mut cap = capture::pcap_capture::open_capture_file(pcap_file)?;
-        let link_type = cap.get_datalink().0;
-        let mut processor = albion::session::PacketProcessor::new(Duration::from_secs(90));
-        let mut correlator = albion::correlator::TradeCorrelator::default();
+        let bytes = fs::read(pcap_file)?;
+        let packets = pcapng_adapter::parse_pcapng(&bytes)?;
+        let mut engine = decode_engine::photon::DecodeEngine::new();
         let mut counters = PipelineCounters::default();
-        while let Ok(packet) = cap.next_packet() {
-            if packet.data.is_empty() {
-                continue;
-            }
-            let packet = packet.data;
+        let sheets_client = if config.dry_run {
+            None
+        } else {
+            config.validate_google_config()?;
+            Some(
+                sheets::client::SheetsClient::new(
+                    config.google_client_secret.clone().expect("validated"),
+                    config.google_token_cache.clone(),
+                    config.spreadsheet_id.clone().expect("validated"),
+                    config.sheet_name.clone(),
+                )
+                .await?,
+            )
+        };
+        if let Some(client) = &sheets_client {
+            client.ensure_header().await?;
+        }
+        let mut dedupe = HashSet::new();
+        for packet in packets {
             counters.packets_seen = counters.packets_seen.wrapping_add(1);
-            if counters.packets_seen % 512 == 0 {
-                processor.cleanup_stale_sessions();
-            }
-            let udp = albion::decoder::extract_udp_payload(albion::decoder::CapturePacket {
-                link_type,
-                packet,
-            });
-            let (udp_payload, src_ip, src_port, dst_ip, dst_port, protocol) = match udp {
-                Ok(t) => (
-                    t.payload, t.src_ip, t.src_port, t.dst_ip, t.dst_port, t.protocol,
-                ),
-                Err(reason) => {
-                    match reason {
-                        albion::decoder::UdpExtractDropReason::NonUdp => {
-                            counters.non_udp_drops = counters.non_udp_drops.wrapping_add(1);
-                        }
-                        albion::decoder::UdpExtractDropReason::UnsupportedEtherType => {
-                            counters.non_ipv4_drops = counters.non_ipv4_drops.wrapping_add(1);
-                        }
-                        _ => {
-                            counters.malformed_header_drops =
-                                counters.malformed_header_drops.wrapping_add(1);
-                        }
-                    }
-                    continue;
-                }
-            };
             counters.udp_payloads_accepted = counters.udp_payloads_accepted.wrapping_add(1);
-            let session_key = albion::session::SessionKey {
-                src_ip,
-                src_port,
-                dst_ip,
-                dst_port,
-                protocol,
-            };
-            let outcome = processor.ingest_packet(session_key, udp_payload);
-            for message in &outcome.messages {
-                match albion::decoder::probe_message(message) {
-                    albion::decoder::DecodeProbe::EventDecoded {
-                        code,
-                        encrypted_like,
-                        ..
-                    } => {
-                        if ids::MARKET_EVENT_CODES.contains(&code) {
-                            counters.successful_decodes =
-                                counters.successful_decodes.wrapping_add(1);
-                        }
-                        if encrypted_like {
-                            counters.encrypted_like_payloads_seen =
-                                counters.encrypted_like_payloads_seen.wrapping_add(1);
-                        }
-                    }
-                    albion::decoder::DecodeProbe::OperationDecoded {
-                        op_code,
-                        encrypted_like,
-                        ..
-                    } => {
-                        if ids::MARKET_OPERATION_CODES.contains(&op_code) {
-                            counters.successful_decodes =
-                                counters.successful_decodes.wrapping_add(1);
-                        }
-                        if encrypted_like {
-                            counters.encrypted_like_payloads_seen =
-                                counters.encrypted_like_payloads_seen.wrapping_add(1);
-                        }
-                    }
-                    albion::decoder::DecodeProbe::UnsupportedCommandType {
-                        message_type,
-                        encrypted_like,
-                        ..
-                    } => {
-                        counters.unsupported_command_types =
-                            counters.unsupported_command_types.wrapping_add(1);
-                        if message_type == "unknown" {
-                            counters.unknown_message_types =
-                                counters.unknown_message_types.wrapping_add(1);
-                        }
-                        if encrypted_like {
-                            counters.encrypted_like_payloads_seen =
-                                counters.encrypted_like_payloads_seen.wrapping_add(1);
-                        }
-                    }
-                    albion::decoder::DecodeProbe::EventDecodeFailed => {
-                        counters.event_decode_failures =
-                            counters.event_decode_failures.wrapping_add(1);
-                    }
-                    albion::decoder::DecodeProbe::OperationDecodeFailed => {
-                        counters.operation_decode_failures =
-                            counters.operation_decode_failures.wrapping_add(1);
-                    }
-                }
-            }
-            for diag in &outcome.diagnostics {
+            let result = engine.ingest_packet(&packet)?;
+            counters.successful_decodes = counters
+                .successful_decodes
+                .wrapping_add(result.stats.successful_decodes);
+            counters.unsupported_command_types = counters
+                .unsupported_command_types
+                .wrapping_add(result.stats.unsupported_command_types);
+            counters.event_decode_failures = counters
+                .event_decode_failures
+                .wrapping_add(result.stats.event_decode_failures);
+            counters.operation_decode_failures = counters
+                .operation_decode_failures
+                .wrapping_add(result.stats.operation_decode_failures);
+            counters.unknown_message_types = counters
+                .unknown_message_types
+                .wrapping_add(result.stats.unknown_message_types);
+            counters.encrypted_like_payloads_seen = counters
+                .encrypted_like_payloads_seen
+                .wrapping_add(result.stats.encrypted_like_payloads_seen);
+            counters.stateful_transactions_emitted = counters
+                .stateful_transactions_emitted
+                .wrapping_add(result.stats.stateful_transactions_emitted);
+            for diag in &result.outcome.diagnostics {
                 match diag.command_kind {
                     "reliable" => {
                         counters.reliable_commands_seen =
@@ -294,30 +234,35 @@ async fn main() -> Result<()> {
             }
             counters.small_gap_advances = counters
                 .small_gap_advances
-                .wrapping_add(outcome.summary.small_gap_advances);
+                .wrapping_add(result.outcome.summary.small_gap_advances);
             counters.large_gap_resyncs = counters
                 .large_gap_resyncs
-                .wrapping_add(outcome.summary.large_gap_resyncs);
+                .wrapping_add(result.outcome.summary.large_gap_resyncs);
             counters.duplicate_sequences_suppressed = counters
                 .duplicate_sequences_suppressed
-                .wrapping_add(outcome.summary.duplicate_sequences_suppressed);
+                .wrapping_add(result.outcome.summary.duplicate_sequences_suppressed);
             counters.pending_queue_drops = counters
                 .pending_queue_drops
-                .wrapping_add(outcome.summary.pending_queue_drops);
+                .wrapping_add(result.outcome.summary.pending_queue_drops);
             counters.fragment_buffered_packets = counters
                 .fragment_buffered_packets
-                .wrapping_add(outcome.summary.fragment_buffered_packets);
+                .wrapping_add(result.outcome.summary.fragment_buffered_packets);
 
-            for txn in albion::decoder::extract_market_transactions_stateful(
-                &mut correlator,
-                &outcome.messages,
-            ) {
-                println!(
-                    "{} | {} | {} | {} | {}",
-                    txn.location, txn.item, txn.quantity, txn.per_item_cost, txn.total_cost
-                );
+            for txn in result.transactions {
                 counters.mapped_transactions_emitted =
                     counters.mapped_transactions_emitted.wrapping_add(1);
+                let key = txn.dedupe_key();
+                if !dedupe.insert(key) {
+                    continue;
+                }
+                if let Some(client) = &sheets_client {
+                    client.append_transaction_with_retry(&txn).await?;
+                } else {
+                    println!(
+                        "{} | {} | {} | {} | {}",
+                        txn.location, txn.item, txn.quantity, txn.per_item_cost, txn.total_cost
+                    );
+                }
             }
         }
         info!(
@@ -335,7 +280,6 @@ async fn main() -> Result<()> {
             operation_decode_failures = counters.operation_decode_failures,
             successful_decodes = counters.successful_decodes,
             mapped_transactions_emitted = counters.mapped_transactions_emitted,
-            stateless_transactions_emitted = counters.stateless_transactions_emitted,
             stateful_transactions_emitted = counters.stateful_transactions_emitted,
             correlated_transactions_queued = counters.correlated_transactions_queued,
             reliable_commands_seen = counters.reliable_commands_seen,
@@ -355,14 +299,6 @@ async fn main() -> Result<()> {
             accepted_udp_pct = counters.pct(counters.udp_payloads_accepted),
             decode_success_pct = counters.pct(counters.successful_decodes),
             mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted),
-            correlator_cache_len = correlator.cache_len(),
-            correlator_pending_len = correlator.pending_len(),
-            correlator_orders_cached = correlator.stats().orders_cached,
-            correlator_pending_created = correlator.stats().pending_created,
-            correlator_pending_confirmed = correlator.stats().pending_confirmed,
-            correlator_pending_failed = correlator.stats().pending_failed,
-            correlator_pending_expired = correlator.stats().pending_expired,
-            correlator_cache_expired = correlator.stats().cache_expired,
             "decoder pipeline summary"
         );
         return Ok(());
@@ -409,10 +345,8 @@ async fn main() -> Result<()> {
                 let debug_tap = debug_tap.clone();
                 std::thread::spawn(move || {
                     let link_type = cap.get_datalink().0;
-                    let mut processor =
-                        albion::session::PacketProcessor::new(Duration::from_secs(90));
                     let mut counters = PipelineCounters::default();
-                    let mut correlator = albion::correlator::TradeCorrelator::default();
+                    let mut engine = decode_engine::photon::DecodeEngine::new();
                     loop {
                         let packet = match cap.next_packet() {
                             Ok(packet) => packet,
@@ -424,31 +358,23 @@ async fn main() -> Result<()> {
                         if packet.data.is_empty() {
                             continue;
                         }
-                        let packet = packet.data;
                         counters.packets_seen = counters.packets_seen.wrapping_add(1);
-                        if counters.packets_seen % 512 == 0 {
-                            processor.cleanup_stale_sessions();
-                        }
-                        let udp =
-                            albion::decoder::extract_udp_payload(albion::decoder::CapturePacket {
-                                link_type,
-                                packet,
-                            });
-                        let (udp_payload, src_ip, src_port, dst_ip, dst_port, protocol) = match udp
-                        {
-                            Ok(t) => (
-                                t.payload, t.src_ip, t.src_port, t.dst_ip, t.dst_port, t.protocol,
-                            ),
+                        let ingress = match live_adapter::adapt_packet(
+                            counters.packets_seen,
+                            link_type,
+                            packet.data,
+                        ) {
+                            Ok(packet) => packet,
                             Err(reason) => {
                                 match reason {
-                                    albion::decoder::UdpExtractDropReason::NonUdp => {
+                                    live_adapter::UdpExtractDropReason::NonUdp => {
                                         counters.non_udp_drops =
                                             counters.non_udp_drops.wrapping_add(1);
                                         if PipelineCounters::should_sample(counters.non_udp_drops) {
                                             debug!(interface = %interface, ?reason, "packet rejected");
                                         }
                                     }
-                                    albion::decoder::UdpExtractDropReason::UnsupportedEtherType => {
+                                    live_adapter::UdpExtractDropReason::UnsupportedEtherType => {
                                         counters.non_ipv4_drops =
                                             counters.non_ipv4_drops.wrapping_add(1);
                                         if PipelineCounters::should_sample(counters.non_ipv4_drops)
@@ -471,20 +397,21 @@ async fn main() -> Result<()> {
                         };
                         counters.udp_payloads_accepted =
                             counters.udp_payloads_accepted.wrapping_add(1);
-                        let session_key = albion::session::SessionKey {
-                            src_ip,
-                            src_port,
-                            dst_ip,
-                            dst_port,
-                            protocol,
+                        let result = match engine.ingest_packet(&ingress) {
+                            Ok(result) => result,
+                            Err(err) => {
+                                counters.malformed_header_drops =
+                                    counters.malformed_header_drops.wrapping_add(1);
+                                warn!(interface = %interface, error = %err, "ingress packet rejected by decode engine");
+                                continue;
+                            }
                         };
-                        let outcome = processor.ingest_packet(session_key.clone(), udp_payload);
                         if let Some(tap) = &debug_tap {
-                            for failure in &outcome.failures {
+                            for failure in &result.outcome.failures {
                                 if let Ok(mut guard) = tap.lock() {
                                     guard.record(
                                         &interface,
-                                        &session_key,
+                                        &result.session_key,
                                         failure.stage,
                                         &failure.error,
                                         &failure.payload,
@@ -492,85 +419,28 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
-                        let messages = outcome.messages;
-                        for message in &messages {
-                            match albion::decoder::probe_message(message) {
-                                albion::decoder::DecodeProbe::EventDecoded {
-                                    code,
-                                    key_count,
-                                    message_type,
-                                    encrypted_like,
-                                } => {
-                                    if ids::MARKET_EVENT_CODES.contains(&code) {
-                                        counters.successful_decodes =
-                                            counters.successful_decodes.wrapping_add(1);
-                                        debug!(interface = %interface, code, key_count, message_type, encrypted_like, "market event code observed in decoded message");
-                                    }
-                                    if encrypted_like {
-                                        counters.encrypted_like_payloads_seen =
-                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
-                                    }
-                                }
-                                albion::decoder::DecodeProbe::OperationDecoded {
-                                    op_code,
-                                    return_code,
-                                    key_count,
-                                    message_type,
-                                    encrypted_like,
-                                } => {
-                                    if ids::MARKET_OPERATION_CODES.contains(&op_code) {
-                                        counters.successful_decodes =
-                                            counters.successful_decodes.wrapping_add(1);
-                                        debug!(interface = %interface, op_code, return_code, key_count, message_type, encrypted_like, "market operation code observed in decoded message");
-                                    }
-                                    if encrypted_like {
-                                        counters.encrypted_like_payloads_seen =
-                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
-                                    }
-                                }
-                                albion::decoder::DecodeProbe::UnsupportedCommandType {
-                                    command_type,
-                                    message_type,
-                                    encrypted_like,
-                                } => {
-                                    counters.unsupported_command_types =
-                                        counters.unsupported_command_types.wrapping_add(1);
-                                    if PipelineCounters::should_sample(
-                                        counters.unsupported_command_types,
-                                    ) {
-                                        debug!(drop_reason = "unsupported_command_type", interface = %interface, command_type, "unsupported command type observed");
-                                    }
-                                    if message_type == "unknown" {
-                                        counters.unknown_message_types =
-                                            counters.unknown_message_types.wrapping_add(1);
-                                    }
-                                    if encrypted_like {
-                                        counters.encrypted_like_payloads_seen =
-                                            counters.encrypted_like_payloads_seen.wrapping_add(1);
-                                    }
-                                    if let Some(tap) = &debug_tap
-                                        && let Ok(mut guard) = tap.lock()
-                                    {
-                                        guard.record(
-                                            &interface,
-                                            &session_key,
-                                            "unsupported_command",
-                                            &format!("unsupported command type {command_type}"),
-                                            &message.payload,
-                                        );
-                                    }
-                                }
-                                albion::decoder::DecodeProbe::EventDecodeFailed => {
-                                    counters.event_decode_failures =
-                                        counters.event_decode_failures.wrapping_add(1);
-                                }
-                                albion::decoder::DecodeProbe::OperationDecodeFailed => {
-                                    counters.operation_decode_failures =
-                                        counters.operation_decode_failures.wrapping_add(1);
-                                }
-                            }
-                        }
-                        for diag in &outcome.diagnostics {
+                        counters.successful_decodes = counters
+                            .successful_decodes
+                            .wrapping_add(result.stats.successful_decodes);
+                        counters.unsupported_command_types = counters
+                            .unsupported_command_types
+                            .wrapping_add(result.stats.unsupported_command_types);
+                        counters.event_decode_failures = counters
+                            .event_decode_failures
+                            .wrapping_add(result.stats.event_decode_failures);
+                        counters.operation_decode_failures = counters
+                            .operation_decode_failures
+                            .wrapping_add(result.stats.operation_decode_failures);
+                        counters.unknown_message_types = counters
+                            .unknown_message_types
+                            .wrapping_add(result.stats.unknown_message_types);
+                        counters.encrypted_like_payloads_seen = counters
+                            .encrypted_like_payloads_seen
+                            .wrapping_add(result.stats.encrypted_like_payloads_seen);
+                        counters.stateful_transactions_emitted = counters
+                            .stateful_transactions_emitted
+                            .wrapping_add(result.stats.stateful_transactions_emitted);
+                        for diag in &result.outcome.diagnostics {
                             match diag.command_kind {
                                 "reliable" => {
                                     counters.reliable_commands_seen =
@@ -594,33 +464,21 @@ async fn main() -> Result<()> {
                         }
                         counters.small_gap_advances = counters
                             .small_gap_advances
-                            .wrapping_add(outcome.summary.small_gap_advances);
+                            .wrapping_add(result.outcome.summary.small_gap_advances);
                         counters.large_gap_resyncs = counters
                             .large_gap_resyncs
-                            .wrapping_add(outcome.summary.large_gap_resyncs);
+                            .wrapping_add(result.outcome.summary.large_gap_resyncs);
                         counters.duplicate_sequences_suppressed = counters
                             .duplicate_sequences_suppressed
-                            .wrapping_add(outcome.summary.duplicate_sequences_suppressed);
+                            .wrapping_add(result.outcome.summary.duplicate_sequences_suppressed);
                         counters.pending_queue_drops = counters
                             .pending_queue_drops
-                            .wrapping_add(outcome.summary.pending_queue_drops);
+                            .wrapping_add(result.outcome.summary.pending_queue_drops);
                         counters.fragment_buffered_packets = counters
                             .fragment_buffered_packets
-                            .wrapping_add(outcome.summary.fragment_buffered_packets);
-                        let stateless_txs = albion::decoder::extract_market_transactions(&messages);
-                        counters.stateless_transactions_emitted = counters
-                            .stateless_transactions_emitted
-                            .wrapping_add(stateless_txs.len());
+                            .wrapping_add(result.outcome.summary.fragment_buffered_packets);
 
-                        let stateful_txs = albion::decoder::extract_market_transactions_stateful(
-                            &mut correlator,
-                            &messages,
-                        );
-                        counters.stateful_transactions_emitted = counters
-                            .stateful_transactions_emitted
-                            .wrapping_add(stateful_txs.len());
-
-                        for txn in stateful_txs {
+                        for txn in result.transactions {
                             counters.mapped_transactions_emitted =
                                 counters.mapped_transactions_emitted.wrapping_add(1);
                             counters.correlated_transactions_queued =
@@ -629,7 +487,7 @@ async fn main() -> Result<()> {
                             let _ = capture_tx.blocking_send(txn);
                         }
                         if counters.packets_seen % 2048 == 0 {
-                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, stateless_transactions_emitted = counters.stateless_transactions_emitted, stateful_transactions_emitted = counters.stateful_transactions_emitted, correlated_transactions_queued = counters.correlated_transactions_queued, reliable_commands_seen = counters.reliable_commands_seen, unreliable_commands_seen = counters.unreliable_commands_seen, fragment_commands_seen = counters.fragment_commands_seen, disconnect_commands_seen = counters.disconnect_commands_seen, unknown_message_types = counters.unknown_message_types, encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen, small_gap_advances = counters.small_gap_advances, large_gap_resyncs = counters.large_gap_resyncs, duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed, pending_queue_drops = counters.pending_queue_drops, fragment_buffered_packets = counters.fragment_buffered_packets, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), correlator_cache_len = correlator.cache_len(), correlator_pending_len = correlator.pending_len(), correlator_orders_cached = correlator.stats().orders_cached, correlator_pending_created = correlator.stats().pending_created, correlator_pending_confirmed = correlator.stats().pending_confirmed, correlator_pending_failed = correlator.stats().pending_failed, correlator_pending_expired = correlator.stats().pending_expired, correlator_cache_expired = correlator.stats().cache_expired, "decoder pipeline summary");
+                            info!(interface = %interface, packets_seen = counters.packets_seen, non_ipv4_drops = counters.non_ipv4_drops, non_udp_drops = counters.non_udp_drops, malformed_header_drops = counters.malformed_header_drops, udp_payloads_accepted = counters.udp_payloads_accepted, frame_parse_incomplete = counters.frame_parse_incomplete, frame_parse_invalid = counters.frame_parse_invalid, command_envelope_decode_errors = counters.command_envelope_decode_errors, unsupported_command_types = counters.unsupported_command_types, event_decode_failures = counters.event_decode_failures, operation_decode_failures = counters.operation_decode_failures, successful_decodes = counters.successful_decodes, mapped_transactions_emitted = counters.mapped_transactions_emitted, stateful_transactions_emitted = counters.stateful_transactions_emitted, correlated_transactions_queued = counters.correlated_transactions_queued, reliable_commands_seen = counters.reliable_commands_seen, unreliable_commands_seen = counters.unreliable_commands_seen, fragment_commands_seen = counters.fragment_commands_seen, disconnect_commands_seen = counters.disconnect_commands_seen, unknown_message_types = counters.unknown_message_types, encrypted_like_payloads_seen = counters.encrypted_like_payloads_seen, small_gap_advances = counters.small_gap_advances, large_gap_resyncs = counters.large_gap_resyncs, duplicate_sequences_suppressed = counters.duplicate_sequences_suppressed, pending_queue_drops = counters.pending_queue_drops, fragment_buffered_packets = counters.fragment_buffered_packets, non_ipv4_drop_pct = counters.pct(counters.non_ipv4_drops), non_udp_drop_pct = counters.pct(counters.non_udp_drops), malformed_drop_pct = counters.pct(counters.malformed_header_drops), accepted_udp_pct = counters.pct(counters.udp_payloads_accepted), decode_success_pct = counters.pct(counters.successful_decodes), mapped_txn_pct = counters.pct(counters.mapped_transactions_emitted), "decoder pipeline summary");
                         }
                     }
                 });
