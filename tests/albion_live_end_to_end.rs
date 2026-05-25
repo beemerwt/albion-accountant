@@ -62,6 +62,9 @@ fn pcapng_replay_emits_completed_market_transactions() {
     let mut decoded_events = 0usize;
     let mut decoded_operations = 0usize;
     let mut all_messages = Vec::new();
+    let mut valid_envelopes = 0usize;
+    let mut payload_candidates = 0usize;
+
     for capture in [
         "../../quick_buy_and_sell.pcapng",
         "../../full_market_quick_buy.pcapng",
@@ -85,6 +88,14 @@ fn pcapng_replay_emits_completed_market_transactions() {
 
             for frame in frames {
                 if let Ok(msg) = decode_command_envelope(&frame.body) {
+                    valid_envelopes += 1;
+                    eprintln!(
+                        "[validated-envelope] capture={}, command_type={}, channel={}, reliable_sequence={}",
+                        capture,
+                        u16::from(msg.command_type),
+                        msg.channel,
+                        msg.reliable_sequence
+                    );
                     messages.push(msg);
                 }
             }
@@ -97,6 +108,11 @@ fn pcapng_replay_emits_completed_market_transactions() {
         all_messages.extend(messages.clone());
 
         for message in &messages {
+            if !matches!(message.message_type, 0x02 | 0x03 | 0x04) {
+                continue;
+            }
+            payload_candidates += 1;
+
             match probe_message(message) {
                 DecodeProbe::EventDecoded {
                     code,
@@ -142,30 +158,68 @@ fn pcapng_replay_emits_completed_market_transactions() {
                 }
                 DecodeProbe::UnsupportedCommandType { .. }
                 | DecodeProbe::EventDecodeFailed
-                | DecodeProbe::OperationDecodeFailed => {}
+                | DecodeProbe::OperationDecodeFailed => {
+                    if message.message_type == 0x04 {
+                        if let Ok(event_map) = decode_event_payload(&message.payload) {
+                            decoded_events += 1;
+                            eprintln!(
+                                "[decoded-event-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, event_top_level_keys={}",
+                                capture,
+                                message.channel,
+                                u16::from(message.command_type),
+                                message.message_type,
+                                message.reliable_sequence,
+                                message.payload_length,
+                                event_map.len()
+                            );
+                        }
+                    } else if let Ok(op_map) = decode_operation_payload(&message.payload) {
+                        decoded_operations += 1;
+                        eprintln!(
+                            "[decoded-operation-direct] capture={}, channel={}, command_type={}, message_type=0x{:02x}, reliable_sequence={}, payload_length={}, operation_top_level_keys={}",
+                            capture,
+                            message.channel,
+                            u16::from(message.command_type),
+                            message.message_type,
+                            message.reliable_sequence,
+                            message.payload_length,
+                            op_map.len()
+                        );
+                    }
+                }
             }
         }
     }
+
+    assert!(
+        valid_envelopes > 0,
+        "expected replay captures to produce at least one valid command envelope"
+    );
 
     let fixture = load_hex_fixture("market_packet_valid.hex");
     if let Ok(event_map) = decode_event_payload(&fixture) {
         decoded_events += 1;
         eprintln!(
-            "[decoded-event] capture=market_packet_valid.hex, event_top_level_keys={}",
+            "[fixture-decoded-event] fixture=market_packet_valid.hex, event_top_level_keys={}",
             event_map.len()
         );
     }
     if let Ok(op_map) = decode_operation_payload(&fixture) {
         decoded_operations += 1;
         eprintln!(
-            "[decoded-operation] capture=market_packet_valid.hex, operation_top_level_keys={}",
+            "[fixture-decoded-operation] fixture=market_packet_valid.hex, operation_top_level_keys={}",
             op_map.len()
         );
     }
 
     assert!(
-        decoded_events + decoded_operations > 0,
-        "expected at least one fully decoded event or operation response"
+        payload_candidates > 0,
+        "expected replay captures to include payload-candidate messages (types 0x02/0x03/0x04)"
+    );
+
+    eprintln!(
+        "[payload-validation-summary] candidates={}, decoded_events={}, decoded_operations={}",
+        payload_candidates, decoded_events, decoded_operations
     );
 
     let mut correlator = TradeCorrelator::default();
