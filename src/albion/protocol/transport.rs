@@ -222,6 +222,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reliable_and_unreliable_envelopes_decode_expected_message_type() {
+        // message type at payload[1] for command types 6/7 after transport normalization
+        let reliable_payload = vec![0x10, 0xF3, 0xAA, 0xBB];
+        // unreliable payload has an extra 4-byte subheader that transport strips
+        let unreliable_payload = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x10, 0xA7, 0xCC, 0xDD];
+
+        let packet = build_photon_packet(vec![
+            (6u8, 0u8, 1u32, reliable_payload),
+            (7u8, 0u8, 2u32, unreliable_payload),
+        ]);
+
+        let frames = parse_udp_payload_incremental(&packet).expect("parses packet");
+        assert_eq!(frames.len(), 2);
+
+        let reliable = decode_command_envelope(&frames[0].body).expect("decodes reliable");
+        assert_eq!(reliable.command_type, 6);
+        assert_eq!(reliable.message_type, 0xF3);
+
+        let unreliable = decode_command_envelope(&frames[1].body).expect("decodes unreliable");
+        assert_eq!(unreliable.command_type, 7);
+        assert_eq!(unreliable.message_type, 0xA7);
+    }
+
     fn build_photon_packet(commands: Vec<(u8, u8, u32, Vec<u8>)>) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&0x1234u16.to_be_bytes()); // peer id
