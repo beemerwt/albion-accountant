@@ -1,20 +1,8 @@
 mod capture;
 mod cli;
 mod error;
-mod event_codes;
 mod google_sheets;
-mod hosts;
 mod live;
-mod models;
-mod names;
-mod operation_codes;
-mod packet;
-mod pcap;
-mod photon;
-mod protocol18;
-mod requests;
-mod responses;
-mod util;
 
 use crate::{
     capture::process_capture,
@@ -23,8 +11,8 @@ use crate::{
     google_sheets::{GoogleSheetsConfig, prepare_google_sheet},
     live::process_live_capture,
 };
+use albion_network_lib::DecodedPacket;
 use clap::Parser;
-use packet::DecodedPacket;
 use std::path::Path;
 
 #[tokio::main]
@@ -106,4 +94,17 @@ fn has_structured_extract(packet: &DecodedPacket) -> bool {
         packet.message_type.as_str(),
         "operation_request" | "operation_response"
     ) && packet.extracted.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use albion_network_lib::PhotonParser;
+
+    #[test]
+    fn app_can_instantiate_network_parser() {
+        let parser = PhotonParser::new("smoke".to_string(), false);
+
+        assert_eq!(parser.decoded_packets().len(), 0);
+        assert_eq!(parser.market_order_count(), 0);
+    }
 }

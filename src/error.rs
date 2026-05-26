@@ -27,6 +27,12 @@ impl From<serde_json::Error> for DecodeError {
     }
 }
 
+impl From<albion_network_lib::DecodeError> for DecodeError {
+    fn from(value: albion_network_lib::DecodeError) -> Self {
+        Self(value.0)
+    }
+}
+
 impl From<dotenvy::Error> for DecodeError {
     fn from(value: dotenvy::Error) -> Self {
         Self(value.to_string())

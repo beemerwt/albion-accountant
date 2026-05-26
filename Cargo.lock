@@ -6,6 +6,7 @@ version = 4
 name = "albion"
 version = "0.1.0"
 dependencies = [
+ "albion-network-lib",
  "chrono",
  "clap",
  "dotenvy",
@@ -14,6 +15,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "albion-network-lib"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
