@@ -5,6 +5,7 @@
 google-credentials.json
 google-token-cache.json
 client_secret*.json
+client-secret*.json
 token-cache*.json
 .albion-accountant-token.json
 .env

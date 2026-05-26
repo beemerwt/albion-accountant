@@ -26,3 +26,9 @@ impl From<serde_json::Error> for DecodeError {
         Self(value.to_string())
     }
 }
+
+impl From<dotenvy::Error> for DecodeError {
+    fn from(value: dotenvy::Error) -> Self {
+        Self(value.to_string())
+    }
+}

@@ -2,6 +2,7 @@ mod capture;
 mod cli;
 mod error;
 mod event_codes;
+mod google_sheets;
 mod hosts;
 mod live;
 mod names;
@@ -14,12 +15,25 @@ mod requests;
 mod responses;
 mod util;
 
-use crate::{capture::process_capture, cli::Args, error::Result, live::process_live_capture};
+use crate::{
+    capture::process_capture,
+    cli::Args,
+    error::{DecodeError, Result},
+    google_sheets::{GoogleSheetsConfig, prepare_google_sheet},
+    live::process_live_capture,
+};
 use clap::Parser;
 use packet::DecodedPacket;
+use std::path::Path;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
+    load_dotenv()?;
     let args = Args::parse();
+    if let Some(config) = GoogleSheetsConfig::from_args(&args)? {
+        prepare_google_sheet(&config).await?;
+    }
+
     if args.live {
         return process_live_capture(args.debug, |packet| {
             if args.all || has_structured_extract(&packet) {
@@ -46,6 +60,18 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn load_dotenv() -> Result<()> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
+    match dotenvy::from_path(&path) {
+        Ok(_) => Ok(()),
+        Err(dotenvy::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(DecodeError(format!(
+            "failed to load environment file '{}': {err}",
+            path.display()
+        ))),
+    }
 }
 
 fn print_packet(packet: &DecodedPacket, json: bool) -> Result<()> {

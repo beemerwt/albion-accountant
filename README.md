@@ -65,15 +65,14 @@ mv ~/Downloads/google-credentials.json ~/.config/albion-accountant/google-creden
 chmod 600 ~/.config/albion-accountant/google-credentials.json
 ```
 
-6. Export environment variables:
+6. Copy `.env.example` to `.env` and fill in the Google Sheets values:
 
 ```bash
-export ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET="$HOME/.config/albion-accountant/google-credentials.json"
-export ALBION_ACCOUNTANT_GOOGLE_TOKEN_CACHE="$HOME/.config/albion-accountant/google-token-cache.json"
-export ALBION_ACCOUNTANT_SPREADSHEET_ID="the_id_between_/d/_and_/edit"
-export ALBION_ACCOUNTANT_SHEET_NAME="Sheet1"
-export ALBION_ACCOUNTANT_INTERFACE="eth0"
+cp .env.example .env
 ```
+
+The app loads `.env` from the repository root on startup. Environment variables already set in
+your shell still take precedence.
 
 Spreadsheet ID comes from URLs like:
 
@@ -96,18 +95,14 @@ Or explicitly pass all Google values:
 
 ```bash
 cargo run -- \
-  --interface eth0 \
-  --google-client-secret "$HOME/.config/albion-accountant/google-credentials.json" \
-  --google-token-cache "$HOME/.config/albion-accountant/google-token-cache.json" \
+  --client-secret "$HOME/.config/albion-accountant/google-credentials.json" \
   --spreadsheet-id <spreadsheet-id> \
   --sheet-name Sheet1
 ```
 
-Headers are auto-created if missing:
-
-```text
-Location | Item | Quantity | Per Item Cost | Total Cost
-```
+When Google Sheets is configured, the app authenticates with OAuth, stores the token cache in
+`.albion-accountant-token.json`, creates the named sheet if it is missing, and clears existing
+values from that sheet.
 
 ## Tests
 
