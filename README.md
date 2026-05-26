@@ -91,6 +91,9 @@ cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
 cargo run -- --interface eth0
 ```
 
+Use `--dry-run` for local capture/replay runs that should not authenticate with, create, clear, or
+otherwise modify Google Sheets, even when `.env` contains Google configuration.
+
 Or explicitly pass all Google values:
 
 ```bash

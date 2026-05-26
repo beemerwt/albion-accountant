@@ -31,7 +31,9 @@ use std::path::Path;
 async fn main() -> Result<()> {
     load_dotenv()?;
     let args = Args::parse();
-    if let Some(config) = GoogleSheetsConfig::from_args(&args)? {
+    if !args.dry_run
+        && let Some(config) = GoogleSheetsConfig::from_args(&args)?
+    {
         prepare_google_sheet(&config).await?;
     }
 

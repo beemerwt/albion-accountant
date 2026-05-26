@@ -16,19 +16,27 @@ pub struct Args {
     pub live: bool,
     #[arg(
         long,
+        help = "Run without authenticating with or modifying Google Sheets"
+    )]
+    pub dry_run: bool,
+    #[arg(
+        long,
         env = "ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET",
+        hide_env_values = true,
         help = "Path to the Google OAuth 2.0 client secret JSON file"
     )]
     pub client_secret: Option<PathBuf>,
     #[arg(
         long,
         env = "ALBION_ACCOUNTANT_SPREADSHEET_ID",
+        hide_env_values = true,
         help = "Google spreadsheet ID this application is allowed to modify"
     )]
     pub spreadsheet_id: Option<String>,
     #[arg(
         long,
         env = "ALBION_ACCOUNTANT_SHEET_NAME",
+        hide_env_values = true,
         help = "Sheet name inside the spreadsheet this application is allowed to use"
     )]
     pub sheet_name: Option<String>,
