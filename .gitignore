@@ -1,4 +1,7 @@
 /target
+/target_windows
+.codex
+.agents
 service-account.json
 google-credentials.json
 google-token-cache.json

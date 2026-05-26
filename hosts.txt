@@ -1,3 +1,4 @@
-# Albion Online endpoints (seed list; can be overridden with --albion-hosts-file)
-# One endpoint per line (IPv4/IPv6 host literal, or CIDR such as 5.188.125.0/24)
+# This is the hosts file for Albion ip addresses
+# Any address listed here will have it's packets processed
+# Addresses are in CIDR format
 5.188.125.0/24
