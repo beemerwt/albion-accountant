@@ -5,6 +5,7 @@ mod event_codes;
 mod google_sheets;
 mod hosts;
 mod live;
+mod models;
 mod names;
 mod operation_codes;
 mod packet;

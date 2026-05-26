@@ -1,6 +1,7 @@
 use crate::{
     error::Result,
     event_codes::EventCode,
+    models::CachedOrder,
     names,
     operation_codes::OperationCode,
     packet::DecodedPacket,
@@ -42,7 +43,7 @@ pub struct PhotonParser {
     deserializer: Protocol18Deserializer,
     pending_segments: HashMap<i32, PendingSegment>,
     decoded_packets: Vec<DecodedPacket>,
-    market_orders_by_id: HashMap<i64, Value>,
+    market_orders_by_id: HashMap<i64, CachedOrder>,
     unconfirmed_trade: Option<AuctionTrade>,
 }
 
@@ -363,9 +364,7 @@ impl PhotonParser {
             (OperationCode::AuctionGetOffers, "response") => {
                 let orders = extract_market_orders(parameters);
                 for order in &orders {
-                    if let Some(id) = order.get("Id").and_then(value_i64) {
-                        self.market_orders_by_id.insert(id, order.clone());
-                    }
+                    self.market_orders_by_id.insert(order.id, order.clone());
                 }
                 return Some(to_json_value(AuctionGetOffersResult {
                     market_order_count: orders.len(),
@@ -375,9 +374,7 @@ impl PhotonParser {
             (OperationCode::AuctionGetRequests, "response") => {
                 let orders = extract_market_orders(parameters);
                 for order in &orders {
-                    if let Some(id) = order.get("Id").and_then(value_i64) {
-                        self.market_orders_by_id.insert(id, order.clone());
-                    }
+                    self.market_orders_by_id.insert(order.id, order.clone());
                 }
                 return Some(to_json_value(AuctionGetRequestsResult {
                     market_order_count: orders.len(),
@@ -389,7 +386,6 @@ impl PhotonParser {
                 let order_id = parameters.get(&2).and_then(value_i64);
                 let cached_order =
                     order_id.and_then(|id| self.market_orders_by_id.get(&id).cloned());
-                let cached_order = cached_order.unwrap_or(Value::Null);
                 let request = AuctionBuyOffer {
                     amount,
                     cached_order: cached_order.clone(),
@@ -408,7 +404,6 @@ impl PhotonParser {
                 let order_id = parameters.get(&1).and_then(value_i64);
                 let cached_order =
                     order_id.and_then(|id| self.market_orders_by_id.get(&id).cloned());
-                let cached_order = cached_order.unwrap_or(Value::Null);
                 let request = AuctionSellSpecificItemRequest {
                     amount,
                     cached_order: cached_order.clone(),
@@ -481,7 +476,7 @@ fn parse_event_code(params: &BTreeMap<u8, Value>) -> Result<i32> {
     Err(format!("Unknown event code in parameter 252: {code}").into())
 }
 
-fn extract_market_orders(params: &BTreeMap<u8, Value>) -> Vec<Value> {
+fn extract_market_orders(params: &BTreeMap<u8, Value>) -> Vec<CachedOrder> {
     let Some(raw_orders) = params.get(&0) else {
         return Vec::new();
     };
@@ -493,7 +488,7 @@ fn extract_market_orders(params: &BTreeMap<u8, Value>) -> Vec<Value> {
         .into_iter()
         .filter_map(|value| match value {
             Value::String(text) => serde_json::from_str(&text).ok(),
-            Value::Object(_) => Some(value),
+            Value::Object(_) => serde_json::from_value(value).ok(),
             _ => None,
         })
         .collect()
