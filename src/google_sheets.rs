@@ -6,16 +6,26 @@ use google_sheets4::{
     Sheets,
     api::{
         AddSheetRequest, BatchUpdateSpreadsheetRequest, ClearValuesRequest, Request,
-        SheetProperties,
+        SheetProperties, ValueRange,
     },
     hyper_rustls, hyper_util, yup_oauth2,
 };
+use serde_json::Value;
 use std::path::PathBuf;
 
 const TOKEN_CACHE_PATH: &str = ".albion-accountant-token.json";
+type HttpsConnector =
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
+#[derive(Clone)]
 pub struct GoogleSheetsConfig {
     client_secret: PathBuf,
+    spreadsheet_id: String,
+    sheet_name: String,
+}
+
+pub struct GoogleSheetsClient {
+    hub: Sheets<HttpsConnector>,
     spreadsheet_id: String,
     sheet_name: String,
 }
@@ -54,7 +64,7 @@ impl GoogleSheetsConfig {
     }
 }
 
-pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<()> {
+pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleSheetsClient> {
     eprintln!(
         "Warning: Google Sheets setup will wipe existing data from sheet '{}' in spreadsheet '{}'.",
         config.sheet_name, config.spreadsheet_id
@@ -94,7 +104,58 @@ pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<()> {
 
     ensure_sheet_exists(&hub, config).await?;
     clear_sheet_values(&hub, config).await?;
-    Ok(())
+    Ok(GoogleSheetsClient {
+        hub,
+        spreadsheet_id: config.spreadsheet_id.clone(),
+        sheet_name: config.sheet_name.clone(),
+    })
+}
+
+impl GoogleSheetsClient {
+    pub async fn write_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
+        let range = sheet_values_range(&self.sheet_name);
+        let request = values_request(&range, values);
+
+        self.hub
+            .spreadsheets()
+            .values_update(request, &self.spreadsheet_id, &range)
+            .value_input_option("USER_ENTERED")
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to write values to sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(())
+    }
+
+    pub async fn append_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+
+        let range = sheet_append_range(&self.sheet_name);
+        let request = values_request(&range, values);
+
+        self.hub
+            .spreadsheets()
+            .values_append(request, &self.spreadsheet_id, &range)
+            .value_input_option("USER_ENTERED")
+            .insert_data_option("INSERT_ROWS")
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to append values to sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(())
+    }
 }
 
 async fn ensure_sheet_exists<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<()>
@@ -173,4 +234,20 @@ where
 
 fn sheet_range(sheet_name: &str) -> String {
     format!("'{}'", sheet_name.replace('\'', "''"))
+}
+
+fn sheet_values_range(sheet_name: &str) -> String {
+    format!("{}!A1:E", sheet_range(sheet_name))
+}
+
+fn sheet_append_range(sheet_name: &str) -> String {
+    format!("{}!A:E", sheet_range(sheet_name))
+}
+
+fn values_request(range: &str, values: Vec<Vec<Value>>) -> ValueRange {
+    ValueRange {
+        major_dimension: Some("ROWS".to_string()),
+        range: Some(range.to_string()),
+        values: Some(values),
+    }
 }

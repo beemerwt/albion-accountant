@@ -11,24 +11,42 @@ use crate::{
     google_sheets::{GoogleSheetsConfig, prepare_google_sheet},
     live::process_live_capture,
 };
-use albion_network_lib::DecodedPacket;
+use albion_network_lib::{DecodedPacket, ExtractedPacket, models::OperationType};
+use chrono::Local;
 use clap::Parser;
+use serde_json::{Value, json};
 use std::path::Path;
+
+const SHEET_HEADER: [&str; 5] = ["Date", "Location", "Item", "Debit", "Credit"];
 
 #[tokio::main]
 async fn main() -> Result<()> {
     load_dotenv()?;
     let args = Args::parse();
-    if !args.dry_run
+    let sheets_client = if !args.dry_run
         && let Some(config) = GoogleSheetsConfig::from_args(&args)?
     {
-        prepare_google_sheet(&config).await?;
-    }
+        Some(prepare_google_sheet(&config).await?)
+    } else {
+        None
+    };
 
     if args.live {
-        return process_live_capture(args.debug, |packet| {
+        if let Some(client) = sheets_client.as_ref() {
+            client.write_values(sheet_values_with_header(&[])).await?;
+        }
+
+        let runtime_handle = tokio::runtime::Handle::current();
+        return process_live_capture(args.debug, move |packet| {
             if args.all || has_structured_extract(&packet) {
                 print_packet(&packet, args.json)?;
+            }
+            if let Some(client) = sheets_client.as_ref()
+                && let Some(row) = trade_row_from_packet(&packet)
+            {
+                tokio::task::block_in_place(|| {
+                    runtime_handle.block_on(client.append_values(vec![row.into_values()]))
+                })?;
             }
             Ok(())
         });
@@ -41,6 +59,14 @@ async fn main() -> Result<()> {
 
     if !args.all {
         decoded.retain(has_structured_extract);
+    }
+
+    if let Some(client) = sheets_client.as_ref() {
+        let rows = decoded
+            .iter()
+            .filter_map(trade_row_from_packet)
+            .collect::<Vec<_>>();
+        client.write_values(sheet_values_with_header(&rows)).await?;
     }
 
     if args.json {
@@ -96,9 +122,92 @@ fn has_structured_extract(packet: &DecodedPacket) -> bool {
     ) && packet.extracted.is_some()
 }
 
+#[derive(Debug, PartialEq)]
+struct TradeSheetRow {
+    date: String,
+    location: String,
+    item: String,
+    debit: Option<i64>,
+    credit: Option<i64>,
+}
+
+impl TradeSheetRow {
+    fn into_values(self) -> Vec<Value> {
+        vec![
+            json!(self.date),
+            json!(self.location),
+            json!(self.item),
+            optional_silver_value(self.debit),
+            optional_silver_value(self.credit),
+        ]
+    }
+}
+
+fn trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
+    let Some(ExtractedPacket::AuctionTradeResponse(response)) = packet.extracted.as_ref() else {
+        return None;
+    };
+    if !response.success {
+        return None;
+    }
+
+    let trade = response.confirmed_trade.as_ref()?;
+    let order = trade.order.as_ref()?;
+    let amount = trade.amount?;
+    let silver = amount.checked_mul(order.unit_price_silver)?;
+    let location = order
+        .friendly_location_name
+        .as_ref()
+        .or(order.location_name.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    match trade.operation {
+        OperationType::Buy => Some(TradeSheetRow {
+            date: Local::now().date_naive().to_string(),
+            location,
+            item: order.item_type_id.clone(),
+            debit: Some(silver),
+            credit: None,
+        }),
+        OperationType::Sell => Some(TradeSheetRow {
+            date: Local::now().date_naive().to_string(),
+            location,
+            item: order.item_type_id.clone(),
+            debit: None,
+            credit: Some(silver),
+        }),
+        OperationType::Unknown(_) => None,
+    }
+}
+
+fn sheet_values_with_header(rows: &[TradeSheetRow]) -> Vec<Vec<Value>> {
+    let mut values = vec![SHEET_HEADER.iter().map(|header| json!(header)).collect()];
+    values.extend(rows.iter().map(|row| {
+        vec![
+            json!(row.date),
+            json!(row.location),
+            json!(row.item),
+            optional_silver_value(row.debit),
+            optional_silver_value(row.credit),
+        ]
+    }));
+    values
+}
+
+fn optional_silver_value(value: Option<i64>) -> Value {
+    value.map(Value::from).unwrap_or_else(|| json!(""))
+}
+
 #[cfg(test)]
 mod tests {
-    use albion_network_lib::PhotonParser;
+    use super::*;
+    use albion_network_lib::{
+        PhotonParser,
+        models::{AuctionType, CachedOrder},
+        responses::auction_trade::{AuctionTrade, AuctionTradeResponse},
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn app_can_instantiate_network_parser() {
@@ -106,5 +215,146 @@ mod tests {
 
         assert_eq!(parser.decoded_packets().len(), 0);
         assert_eq!(parser.market_order_count(), 0);
+    }
+
+    #[test]
+    fn sell_trade_maps_to_credit() {
+        let packet = trade_packet(OperationType::Sell, Some(3), Some(order()));
+
+        let row = trade_row_from_packet(&packet).unwrap();
+
+        assert_eq!(row.location, "Bridgewatch");
+        assert_eq!(row.item, "T4_BAG");
+        assert_eq!(row.debit, None);
+        assert_eq!(row.credit, Some(1500));
+    }
+
+    #[test]
+    fn buy_trade_maps_to_debit() {
+        let packet = trade_packet(OperationType::Buy, Some(2), Some(order()));
+
+        let row = trade_row_from_packet(&packet).unwrap();
+
+        assert_eq!(row.debit, Some(1000));
+        assert_eq!(row.credit, None);
+    }
+
+    #[test]
+    fn incomplete_or_unknown_trades_do_not_map_to_rows() {
+        assert!(
+            trade_row_from_packet(&trade_packet(OperationType::Sell, None, Some(order())))
+                .is_none()
+        );
+        assert!(trade_row_from_packet(&trade_packet(OperationType::Sell, Some(1), None)).is_none());
+        assert!(
+            trade_row_from_packet(&trade_packet(
+                OperationType::Unknown("missing_cached_order".to_string()),
+                Some(1),
+                Some(order()),
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn location_falls_back_to_location_name() {
+        let mut order = order();
+        order.friendly_location_name = None;
+        order.location_name = Some("Fort Sterling".to_string());
+
+        let row = trade_row_from_packet(&trade_packet(OperationType::Sell, Some(1), Some(order)))
+            .unwrap();
+
+        assert_eq!(row.location, "Fort Sterling");
+    }
+
+    #[test]
+    fn sheet_values_include_expected_header_and_shape() {
+        let values = sheet_values_with_header(&[TradeSheetRow {
+            date: "2026-05-27".to_string(),
+            location: "Bridgewatch".to_string(),
+            item: "T4_BAG".to_string(),
+            debit: None,
+            credit: Some(1500),
+        }]);
+
+        assert_eq!(
+            values,
+            vec![
+                vec![
+                    json!("Date"),
+                    json!("Location"),
+                    json!("Item"),
+                    json!("Debit"),
+                    json!("Credit"),
+                ],
+                vec![
+                    json!("2026-05-27"),
+                    json!("Bridgewatch"),
+                    json!("T4_BAG"),
+                    json!(""),
+                    json!(1500),
+                ],
+            ]
+        );
+    }
+
+    fn trade_packet(
+        operation: OperationType,
+        amount: Option<i64>,
+        order: Option<CachedOrder>,
+    ) -> DecodedPacket {
+        DecodedPacket {
+            file: "test".to_string(),
+            packet_number: 1,
+            direction: "server_to_client".to_string(),
+            source: "server:5056".to_string(),
+            destination: "client:1".to_string(),
+            message_type: "operation_response".to_string(),
+            code: 85,
+            name: "AuctionBuyOffer".to_string(),
+            return_code: Some(0),
+            debug_message: String::new(),
+            parameters: BTreeMap::new(),
+            extracted: Some(ExtractedPacket::AuctionTradeResponse(
+                AuctionTradeResponse {
+                    confirmed_trade: Some(AuctionTrade {
+                        amount,
+                        operation,
+                        order,
+                        order_id: Some(1),
+                    }),
+                    success: true,
+                },
+            )),
+        }
+    }
+
+    fn order() -> CachedOrder {
+        CachedOrder {
+            amount: 10,
+            auction_type: AuctionType::Offer,
+            buyer_character_id: None,
+            buyer_name: None,
+            distance_fee: 0,
+            enchantment_level: 0,
+            expires: "soon".to_string(),
+            has_buyer_fetched: false,
+            has_seller_fetched: false,
+            id: 1,
+            is_finished: false,
+            item_group_type_id: "T4_BAG".to_string(),
+            item_type_id: "T4_BAG".to_string(),
+            location_id: Some(2000),
+            location_name: Some("Bridgewatch".to_string()),
+            friendly_location_name: Some("Bridgewatch".to_string()),
+            quality_level: 1,
+            reference_id: "ref".to_string(),
+            seller_character_id: None,
+            seller_name: None,
+            tier: 4,
+            total_price_silver: 5000,
+            unit_price_silver: 500,
+        }
     }
 }
