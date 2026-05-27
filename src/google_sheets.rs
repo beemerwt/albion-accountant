@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 const TOKEN_CACHE_PATH: &str = ".albion-accountant-token.json";
+const SHEET_HEADER: [&str; 6] = ["Date", "Time", "Location", "Item", "Debit", "Credit"];
 type HttpsConnector =
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
@@ -66,7 +67,7 @@ impl GoogleSheetsConfig {
 
 pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleSheetsClient> {
     eprintln!(
-        "Warning: Google Sheets setup will wipe existing data from sheet '{}' in spreadsheet '{}'.",
+        "INFO:albion: preparing Google sheet '{}' in spreadsheet '{}'.",
         config.sheet_name, config.spreadsheet_id
     );
 
@@ -103,7 +104,7 @@ pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleS
     let hub = Sheets::new(sheets_client, auth);
 
     ensure_sheet_exists(&hub, config).await?;
-    clear_sheet_values(&hub, config).await?;
+    ensure_sheet_header(&hub, config).await?;
     Ok(GoogleSheetsClient {
         hub,
         spreadsheet_id: config.spreadsheet_id.clone(),
@@ -112,26 +113,6 @@ pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleS
 }
 
 impl GoogleSheetsClient {
-    pub async fn write_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
-        let range = sheet_values_range(&self.sheet_name);
-        let request = values_request(&range, values);
-
-        self.hub
-            .spreadsheets()
-            .values_update(request, &self.spreadsheet_id, &range)
-            .value_input_option("USER_ENTERED")
-            .doit()
-            .await
-            .map_err(|err| {
-                DecodeError(format!(
-                    "failed to write values to sheet '{}' in spreadsheet '{}': {err}",
-                    self.sheet_name, self.spreadsheet_id
-                ))
-            })?;
-
-        Ok(())
-    }
-
     pub async fn append_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
         if values.is_empty() {
             return Ok(());
@@ -156,6 +137,38 @@ impl GoogleSheetsClient {
 
         Ok(())
     }
+}
+
+async fn ensure_sheet_header<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<()>
+where
+    C: google_sheets4::common::Connector,
+{
+    let range = sheet_header_range(&config.sheet_name);
+    let (_, values) = hub
+        .spreadsheets()
+        .values_get(&config.spreadsheet_id, &range)
+        .doit()
+        .await
+        .map_err(|err| {
+            DecodeError(format!(
+                "failed to read sheet header '{}' in spreadsheet '{}': {err}",
+                config.sheet_name, config.spreadsheet_id
+            ))
+        })?;
+
+    if header_matches(values.values.as_deref()) {
+        return Ok(());
+    }
+
+    if !header_is_empty(values.values.as_deref()) {
+        eprintln!(
+            "Warning: Google sheet '{}' has unexpected headers; clearing values before writing the Albion Accountant header.",
+            config.sheet_name
+        );
+        clear_sheet_values(hub, config).await?;
+    }
+
+    write_header(hub, config).await
 }
 
 async fn ensure_sheet_exists<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<()>
@@ -232,16 +245,44 @@ where
     Ok(())
 }
 
+async fn write_header<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<()>
+where
+    C: google_sheets4::common::Connector,
+{
+    let range = sheet_header_range(&config.sheet_name);
+    let values = vec![
+        SHEET_HEADER
+            .iter()
+            .map(|header| Value::from(*header))
+            .collect(),
+    ];
+    let request = values_request(&range, values);
+
+    hub.spreadsheets()
+        .values_update(request, &config.spreadsheet_id, &range)
+        .value_input_option("USER_ENTERED")
+        .doit()
+        .await
+        .map_err(|err| {
+            DecodeError(format!(
+                "failed to write sheet header '{}' in spreadsheet '{}': {err}",
+                config.sheet_name, config.spreadsheet_id
+            ))
+        })?;
+
+    Ok(())
+}
+
 fn sheet_range(sheet_name: &str) -> String {
     format!("'{}'", sheet_name.replace('\'', "''"))
 }
 
-fn sheet_values_range(sheet_name: &str) -> String {
-    format!("{}!A1:E", sheet_range(sheet_name))
+fn sheet_header_range(sheet_name: &str) -> String {
+    format!("{}!A1:F1", sheet_range(sheet_name))
 }
 
 fn sheet_append_range(sheet_name: &str) -> String {
-    format!("{}!A:E", sheet_range(sheet_name))
+    format!("{}!A:F", sheet_range(sheet_name))
 }
 
 fn values_request(range: &str, values: Vec<Vec<Value>>) -> ValueRange {
@@ -249,5 +290,64 @@ fn values_request(range: &str, values: Vec<Vec<Value>>) -> ValueRange {
         major_dimension: Some("ROWS".to_string()),
         range: Some(range.to_string()),
         values: Some(values),
+    }
+}
+
+fn header_matches(values: Option<&[Vec<Value>]>) -> bool {
+    let Some(first_row) = values.and_then(|rows| rows.first()) else {
+        return false;
+    };
+
+    first_row.len() == SHEET_HEADER.len()
+        && first_row
+            .iter()
+            .zip(SHEET_HEADER)
+            .all(|(actual, expected)| actual.as_str() == Some(expected))
+}
+
+fn header_is_empty(values: Option<&[Vec<Value>]>) -> bool {
+    values.is_none_or(|rows| rows.first().is_none_or(Vec::is_empty))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn header_matches_exact_expected_values() {
+        let values = vec![vec![
+            json!("Date"),
+            json!("Time"),
+            json!("Location"),
+            json!("Item"),
+            json!("Debit"),
+            json!("Credit"),
+        ]];
+
+        assert!(header_matches(Some(&values)));
+    }
+
+    #[test]
+    fn header_rejects_mismatched_values() {
+        let values = vec![vec![
+            json!("Date"),
+            json!("Time"),
+            json!("Place"),
+            json!("Item"),
+            json!("Debit"),
+            json!("Credit"),
+        ]];
+
+        assert!(!header_matches(Some(&values)));
+    }
+
+    #[test]
+    fn header_empty_handles_missing_or_empty_rows() {
+        let empty_row = vec![Vec::new()];
+
+        assert!(header_is_empty(None));
+        assert!(header_is_empty(Some(&[])));
+        assert!(header_is_empty(Some(&empty_row)));
     }
 }

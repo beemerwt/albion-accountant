@@ -2,18 +2,22 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "Decode Albion Photon Protocol18 operations and events from pcapng captures.")]
+#[command(
+    about = "Capture Albion Online market traffic and append decoded trades to Google Sheets."
+)]
 pub struct Args {
-    #[arg(default_values = ["full_market_quick_buy.pcapng", "full_market_quick_sell.pcapng"])]
-    pub captures: Vec<PathBuf>,
+    #[arg(
+        long = "pcap-file",
+        value_name = "PATH",
+        help = "Replay a pcapng capture for testing instead of live capture"
+    )]
+    pub pcap_files: Vec<PathBuf>,
     #[arg(long, help = "Print decoded packets as JSON")]
     pub json: bool,
     #[arg(long, help = "Print Photon command debugging details")]
     pub debug: bool,
     #[arg(long, help = "Output all decoded packets, including events")]
     pub all: bool,
-    #[arg(long, help = "Capture live traffic from every available interface")]
-    pub live: bool,
     #[arg(
         long,
         help = "Run without authenticating with or modifying Google Sheets"

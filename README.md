@@ -45,7 +45,7 @@ Replay mode parses pcapng bytes manually:
 pcapng file bytes -> pcapng_adapter -> DecodeEngine -> TradeSemanticMapper -> dry-run rows or SheetsClient
 ```
 
-Use replay for fixture parity and deterministic local debugging:
+Use replay only for fixture parity and deterministic local debugging:
 
 ```bash
 cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
@@ -85,10 +85,9 @@ Use only `SPREADSHEET_ID_HERE`. `gid=0` is the sheet/tab identifier, not the spr
 ## Usage
 
 ```bash
-cargo run -- --list-interfaces
-cargo run -- --dry-run --interface eth0
+cargo run
+cargo run -- --dry-run
 cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
-cargo run -- --interface eth0
 ```
 
 Use `--dry-run` for local capture/replay runs that should not authenticate with, create, clear, or
@@ -104,8 +103,8 @@ cargo run -- \
 ```
 
 When Google Sheets is configured, the app authenticates with OAuth, stores the token cache in
-`.albion-accountant-token.json`, creates the named sheet if it is missing, and clears existing
-values from that sheet.
+`.albion-accountant-token.json`, creates the named sheet if it is missing, verifies the header, and
+appends decoded live trades. Existing matching sheets are not cleared.
 
 ## Tests
 

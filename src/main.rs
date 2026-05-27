@@ -12,12 +12,10 @@ use crate::{
     live::process_live_capture,
 };
 use albion_network_lib::{DecodedPacket, ExtractedPacket, models::OperationType};
-use chrono::Local;
+use chrono::{DateTime, Local};
 use clap::Parser;
 use serde_json::{Value, json};
 use std::path::Path;
-
-const SHEET_HEADER: [&str; 5] = ["Date", "Location", "Item", "Debit", "Credit"];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,11 +29,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    if args.live {
-        if let Some(client) = sheets_client.as_ref() {
-            client.write_values(sheet_values_with_header(&[])).await?;
-        }
-
+    if args.pcap_files.is_empty() {
         let runtime_handle = tokio::runtime::Handle::current();
         return process_live_capture(args.debug, move |packet| {
             if args.all || has_structured_extract(&packet) {
@@ -53,7 +47,7 @@ async fn main() -> Result<()> {
     }
 
     let mut decoded = Vec::new();
-    for capture in &args.captures {
+    for capture in &args.pcap_files {
         decoded.extend(process_capture(capture, args.debug)?);
     }
 
@@ -65,8 +59,9 @@ async fn main() -> Result<()> {
         let rows = decoded
             .iter()
             .filter_map(trade_row_from_packet)
+            .map(TradeSheetRow::into_values)
             .collect::<Vec<_>>();
-        client.write_values(sheet_values_with_header(&rows)).await?;
+        client.append_values(rows).await?;
     }
 
     if args.json {
@@ -125,6 +120,7 @@ fn has_structured_extract(packet: &DecodedPacket) -> bool {
 #[derive(Debug, PartialEq)]
 struct TradeSheetRow {
     date: String,
+    time: String,
     location: String,
     item: String,
     debit: Option<i64>,
@@ -135,6 +131,7 @@ impl TradeSheetRow {
     fn into_values(self) -> Vec<Value> {
         vec![
             json!(self.date),
+            json!(self.time),
             json!(self.location),
             json!(self.item),
             optional_silver_value(self.debit),
@@ -153,25 +150,29 @@ fn trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
 
     let trade = response.confirmed_trade.as_ref()?;
     let order = trade.order.as_ref()?;
-    let amount = trade.amount?;
-    let silver = amount.checked_mul(order.unit_price_silver)?;
+    let silver = trade.silver_amount?;
     let location = order
         .friendly_location_name
         .as_ref()
         .or(order.location_name.as_ref())
         .cloned()
         .unwrap_or_default();
+    let timestamp = Local::now();
+    let date = formatted_date(timestamp);
+    let time = formatted_time(timestamp);
 
     match trade.operation {
         OperationType::Buy => Some(TradeSheetRow {
-            date: Local::now().date_naive().to_string(),
+            date,
+            time,
             location,
             item: order.item_type_id.clone(),
             debit: Some(silver),
             credit: None,
         }),
         OperationType::Sell => Some(TradeSheetRow {
-            date: Local::now().date_naive().to_string(),
+            date,
+            time,
             location,
             item: order.item_type_id.clone(),
             debit: None,
@@ -181,18 +182,12 @@ fn trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
     }
 }
 
-fn sheet_values_with_header(rows: &[TradeSheetRow]) -> Vec<Vec<Value>> {
-    let mut values = vec![SHEET_HEADER.iter().map(|header| json!(header)).collect()];
-    values.extend(rows.iter().map(|row| {
-        vec![
-            json!(row.date),
-            json!(row.location),
-            json!(row.item),
-            optional_silver_value(row.debit),
-            optional_silver_value(row.credit),
-        ]
-    }));
-    values
+fn formatted_date(timestamp: DateTime<Local>) -> String {
+    timestamp.format("%m/%d/%Y").to_string()
+}
+
+fn formatted_time(timestamp: DateTime<Local>) -> String {
+    timestamp.format("%I:%M %p").to_string()
 }
 
 fn optional_silver_value(value: Option<i64>) -> Value {
@@ -204,7 +199,7 @@ mod tests {
     use super::*;
     use albion_network_lib::{
         PhotonParser,
-        models::{AuctionType, CachedOrder},
+        models::{AuctionType, CachedOrder, TradeType},
         responses::auction_trade::{AuctionTrade, AuctionTradeResponse},
     };
     use std::collections::BTreeMap;
@@ -219,7 +214,7 @@ mod tests {
 
     #[test]
     fn sell_trade_maps_to_credit() {
-        let packet = trade_packet(OperationType::Sell, Some(3), Some(order()));
+        let packet = trade_packet(OperationType::Sell, Some(1500), Some(order()));
 
         let row = trade_row_from_packet(&packet).unwrap();
 
@@ -231,7 +226,7 @@ mod tests {
 
     #[test]
     fn buy_trade_maps_to_debit() {
-        let packet = trade_packet(OperationType::Buy, Some(2), Some(order()));
+        let packet = trade_packet(OperationType::Buy, Some(1000), Some(order()));
 
         let row = trade_row_from_packet(&packet).unwrap();
 
@@ -245,11 +240,13 @@ mod tests {
             trade_row_from_packet(&trade_packet(OperationType::Sell, None, Some(order())))
                 .is_none()
         );
-        assert!(trade_row_from_packet(&trade_packet(OperationType::Sell, Some(1), None)).is_none());
+        assert!(
+            trade_row_from_packet(&trade_packet(OperationType::Sell, Some(1000), None)).is_none()
+        );
         assert!(
             trade_row_from_packet(&trade_packet(
                 OperationType::Unknown("missing_cached_order".to_string()),
-                Some(1),
+                Some(1000),
                 Some(order()),
             ))
             .is_none()
@@ -262,46 +259,40 @@ mod tests {
         order.friendly_location_name = None;
         order.location_name = Some("Fort Sterling".to_string());
 
-        let row = trade_row_from_packet(&trade_packet(OperationType::Sell, Some(1), Some(order)))
+        let row = trade_row_from_packet(&trade_packet(OperationType::Sell, Some(500), Some(order)))
             .unwrap();
 
         assert_eq!(row.location, "Fort Sterling");
     }
 
     #[test]
-    fn sheet_values_include_expected_header_and_shape() {
-        let values = sheet_values_with_header(&[TradeSheetRow {
-            date: "2026-05-27".to_string(),
+    fn row_values_have_expected_shape() {
+        let values = TradeSheetRow {
+            date: "05/27/2026".to_string(),
+            time: "09:41 PM".to_string(),
             location: "Bridgewatch".to_string(),
             item: "T4_BAG".to_string(),
             debit: None,
             credit: Some(1500),
-        }]);
+        }
+        .into_values();
 
         assert_eq!(
             values,
             vec![
-                vec![
-                    json!("Date"),
-                    json!("Location"),
-                    json!("Item"),
-                    json!("Debit"),
-                    json!("Credit"),
-                ],
-                vec![
-                    json!("2026-05-27"),
-                    json!("Bridgewatch"),
-                    json!("T4_BAG"),
-                    json!(""),
-                    json!(1500),
-                ],
+                json!("05/27/2026"),
+                json!("09:41 PM"),
+                json!("Bridgewatch"),
+                json!("T4_BAG"),
+                json!(""),
+                json!(1500),
             ]
         );
     }
 
     fn trade_packet(
         operation: OperationType,
-        amount: Option<i64>,
+        silver_amount: Option<i64>,
         order: Option<CachedOrder>,
     ) -> DecodedPacket {
         DecodedPacket {
@@ -319,8 +310,10 @@ mod tests {
             extracted: Some(ExtractedPacket::AuctionTradeResponse(
                 AuctionTradeResponse {
                     confirmed_trade: Some(AuctionTrade {
-                        amount,
+                        amount: Some(1),
+                        silver_amount,
                         operation,
+                        trade_type: TradeType::Instant,
                         order,
                         order_id: Some(1),
                     }),
@@ -345,7 +338,7 @@ mod tests {
             is_finished: false,
             item_group_type_id: "T4_BAG".to_string(),
             item_type_id: "T4_BAG".to_string(),
-            location_id: Some(2000),
+            location_id: Some("2000".to_string()),
             location_name: Some("Bridgewatch".to_string()),
             friendly_location_name: Some("Bridgewatch".to_string()),
             quality_level: 1,
