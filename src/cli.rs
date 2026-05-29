@@ -25,6 +25,13 @@ pub struct Args {
     pub dry_run: bool,
     #[arg(
         long,
+        env = "ALBION_ACCOUNTANT_DATABASE_PATH",
+        hide_env_values = true,
+        help = "Path to the local SQLite database file"
+    )]
+    pub database_path: Option<PathBuf>,
+    #[arg(
+        long,
         env = "ALBION_ACCOUNTANT_GOOGLE_CLIENT_SECRET",
         hide_env_values = true,
         help = "Path to the Google OAuth 2.0 client secret JSON file"

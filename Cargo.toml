@@ -5,15 +5,22 @@ edition = "2024"
 
 [dependencies]
 albion-network-lib = { path = "../albion-network-lib" }
+axum = "0.8.9"
 chrono = "0.4.44"
 clap = { version = "4.6.1", features = ["derive", "env"] }
+dirs = "6.0.0"
 dotenvy = "0.15.7"
 google-sheets4 = "7.0.0"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tower-http = { version = "0.6.11", features = ["cors"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.178"
 tao = "0.35.3"
 tray-icon = { version = "0.24.0", default-features = false, features = ["gtk"] }
+
+[dev-dependencies]
+tower = "0.5.2"

@@ -1,16 +1,22 @@
+mod browser;
 mod capture;
 mod cli;
 mod error;
 mod google_sheets;
 mod live;
+mod store;
+mod trades;
 #[cfg(target_os = "linux")]
 mod tray;
+mod web;
 
 use crate::{
     capture::process_capture,
     cli::Args,
     error::{DecodeError, Result},
     google_sheets::{GoogleSheetsClient, GoogleSheetsConfig, prepare_google_sheet},
+    store::TradeStore,
+    trades::{TradeOperation, TradeRecord},
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -18,7 +24,6 @@ use crate::live::process_live_capture;
 use albion_network_lib::{DecodedPacket, ExtractedPacket, models::OperationType};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Parser;
-use serde_json::{Value, json};
 use std::path::Path;
 use tokio::runtime::Handle;
 
@@ -26,6 +31,16 @@ use tokio::runtime::Handle;
 async fn main() -> Result<()> {
     load_dotenv()?;
     let args = Args::parse();
+    let database_path = args
+        .database_path
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(TradeStore::default_path)?;
+    let trade_store = TradeStore::open(&database_path)?;
+    eprintln!(
+        "INFO:albion:using local trade database '{}'",
+        database_path.display()
+    );
     let sheets_client = if !args.dry_run
         && let Some(config) = GoogleSheetsConfig::from_args(&args)?
     {
@@ -35,9 +50,9 @@ async fn main() -> Result<()> {
     };
 
     if args.pcap_files.is_empty() {
-        run_live(args, sheets_client)
+        run_live(args, trade_store, sheets_client).await
     } else {
-        run_replay(args, sheets_client).await
+        run_replay(args, trade_store, sheets_client).await
     }
 }
 
@@ -59,41 +74,65 @@ impl From<&Args> for LiveCaptureSettings {
 }
 
 #[cfg(target_os = "linux")]
-fn run_live(args: Args, sheets_client: Option<GoogleSheetsClient>) -> Result<()> {
+async fn run_live(
+    args: Args,
+    trade_store: TradeStore,
+    sheets_client: Option<GoogleSheetsClient>,
+) -> Result<()> {
+    let web_server = web::start_web_server(trade_store.clone()).await?;
     tray::run_live_tray(
         LiveCaptureSettings::from(&args),
+        trade_store,
         sheets_client,
         Handle::current(),
+        web_server.url,
     )
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_live(args: Args, sheets_client: Option<GoogleSheetsClient>) -> Result<()> {
+async fn run_live(
+    args: Args,
+    trade_store: TradeStore,
+    sheets_client: Option<GoogleSheetsClient>,
+) -> Result<()> {
+    let _web_server = web::start_web_server(trade_store.clone()).await?;
     let settings = LiveCaptureSettings::from(&args);
     let runtime_handle = Handle::current();
     process_live_capture(settings.debug, move |packet| {
-        handle_live_packet(&packet, settings, sheets_client.as_ref(), &runtime_handle)
+        handle_live_packet(
+            &packet,
+            settings,
+            &trade_store,
+            sheets_client.as_ref(),
+            &runtime_handle,
+        )
     })
 }
 
 fn handle_live_packet(
     packet: &DecodedPacket,
     settings: LiveCaptureSettings,
+    trade_store: &TradeStore,
     sheets_client: Option<&GoogleSheetsClient>,
     runtime_handle: &Handle,
 ) -> Result<()> {
     if settings.all || has_structured_extract(packet) {
         print_packet(packet, settings.json)?;
     }
-    if let Some(client) = sheets_client
-        && let Some(row) = sheet_row_from_packet(packet)
-    {
-        runtime_handle.block_on(client.upsert_values(vec![row.into_values()]))?;
+    if let Some(trade) = trade_record_from_packet(packet) {
+        trade_store.upsert_trade(&trade)?;
+        if let Some(client) = sheets_client {
+            runtime_handle.block_on(client.upsert_values(vec![trade.into_sheet_values()]))?;
+        }
     }
     Ok(())
 }
 
-async fn run_replay(args: Args, sheets_client: Option<GoogleSheetsClient>) -> Result<()> {
+async fn run_replay(
+    args: Args,
+    trade_store: TradeStore,
+    sheets_client: Option<GoogleSheetsClient>,
+) -> Result<()> {
     let mut decoded = Vec::new();
     for capture in &args.pcap_files {
         decoded.extend(process_capture(capture, args.debug)?);
@@ -104,12 +143,16 @@ async fn run_replay(args: Args, sheets_client: Option<GoogleSheetsClient>) -> Re
     }
 
     if let Some(client) = sheets_client.as_ref() {
-        let rows = decoded
-            .iter()
-            .filter_map(sheet_row_from_packet)
-            .map(TradeSheetRow::into_values)
-            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for trade in decoded.iter().filter_map(trade_record_from_packet) {
+            trade_store.upsert_trade(&trade)?;
+            rows.push(trade.into_sheet_values());
+        }
         client.upsert_values(rows).await?;
+    } else {
+        for trade in decoded.iter().filter_map(trade_record_from_packet) {
+            trade_store.upsert_trade(&trade)?;
+        }
     }
 
     if args.json {
@@ -178,42 +221,17 @@ fn has_structured_extract(packet: &DecodedPacket) -> bool {
         ) && operation.extracted.is_some())
 }
 
-#[derive(Debug, PartialEq)]
-struct TradeSheetRow {
-    id: String,
-    date: String,
-    time: String,
-    location: String,
-    item: String,
-    debit: Option<i64>,
-    credit: Option<i64>,
-}
-
-impl TradeSheetRow {
-    fn into_values(self) -> Vec<Value> {
-        vec![
-            json!(self.id),
-            json!(self.date),
-            json!(self.time),
-            json!(self.location),
-            json!(self.item),
-            optional_silver_value(self.debit),
-            optional_silver_value(self.credit),
-        ]
-    }
-}
-
 fn utc_seconds_to_local(timestamp: i64) -> Option<DateTime<Local>> {
     Utc.timestamp_opt(timestamp, 0)
         .single()
         .map(|timestamp| timestamp.with_timezone(&Local))
 }
 
-fn sheet_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
+fn trade_record_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
     auction_trade_row_from_packet(packet).or_else(|| mail_trade_row_from_packet(packet))
 }
 
-fn mail_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
+fn mail_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
     let operation = match packet {
         DecodedPacket::Operation(operation) => operation,
         DecodedPacket::Event(_) => return None,
@@ -246,7 +264,7 @@ fn mail_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
     )
 }
 
-fn auction_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeSheetRow> {
+fn auction_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
     let operation = match packet {
         DecodedPacket::Operation(operation) => operation,
         DecodedPacket::Event(_) => return None,
@@ -291,39 +309,28 @@ fn row_from_operation(
     item: String,
     silver: i64,
     operation: OperationType,
-) -> Option<TradeSheetRow> {
-    let date = formatted_date(timestamp);
-    let time = formatted_time(timestamp);
-
+) -> Option<TradeRecord> {
     match operation {
-        OperationType::Buy => Some(TradeSheetRow {
+        OperationType::Buy => Some(TradeRecord {
             id,
-            date,
-            time,
+            timestamp,
             location,
             item,
+            operation: TradeOperation::Buy,
             debit: Some(silver),
             credit: None,
         }),
-        OperationType::Sell => Some(TradeSheetRow {
+        OperationType::Sell => Some(TradeRecord {
             id,
-            date,
-            time,
+            timestamp,
             location,
             item,
+            operation: TradeOperation::Sell,
             debit: None,
             credit: Some(silver),
         }),
         OperationType::Unknown(_) => None,
     }
-}
-
-fn formatted_date(timestamp: DateTime<Local>) -> String {
-    timestamp.format("%m/%d/%Y").to_string()
-}
-
-fn formatted_time(timestamp: DateTime<Local>) -> String {
-    timestamp.format("%I:%M %p").to_string()
 }
 
 fn item_label(item_name: Option<&str>, item_id: &str) -> String {
@@ -333,14 +340,11 @@ fn item_label(item_name: Option<&str>, item_id: &str) -> String {
         .to_string()
 }
 
-fn optional_silver_value(value: Option<i64>) -> Value {
-    value.map(Value::from).unwrap_or_else(|| json!(""))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use albion_network_lib::{DecodedOperation, OperationCode};
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     #[test]
@@ -357,8 +361,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(row.date, "05/27/2026");
-        assert_eq!(row.time, "09:41 PM");
+        assert_eq!(row.date(), "05/27/2026");
+        assert_eq!(row.time(), "09:41 PM");
         assert_eq!(row.id, "14987113607");
         assert_eq!(row.location, "Bridgewatch");
         assert_eq!(row.item, "T4_BAG");
@@ -386,7 +390,7 @@ mod tests {
 
     #[test]
     fn missing_or_unknown_rows_do_not_map() {
-        assert!(sheet_row_from_packet(&empty_packet()).is_none());
+        assert!(trade_record_from_packet(&empty_packet()).is_none());
         assert!(
             row_from_operation(
                 "14987113607".to_string(),
@@ -409,16 +413,16 @@ mod tests {
 
     #[test]
     fn row_values_have_expected_shape() {
-        let values = TradeSheetRow {
+        let values = TradeRecord {
             id: "14987113607".to_string(),
-            date: "05/27/2026".to_string(),
-            time: "09:41 PM".to_string(),
+            timestamp: Local.with_ymd_and_hms(2026, 5, 27, 21, 41, 0).unwrap(),
             location: "Bridgewatch".to_string(),
             item: "T4_BAG".to_string(),
+            operation: TradeOperation::Sell,
             debit: None,
             credit: Some(1500),
         }
-        .into_values();
+        .into_sheet_values();
 
         assert_eq!(
             values,

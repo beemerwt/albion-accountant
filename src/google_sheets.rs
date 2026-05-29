@@ -1,4 +1,5 @@
 use crate::{
+    browser::open_url_in_browser,
     cli::Args,
     error::{DecodeError, Result},
 };
@@ -13,7 +14,7 @@ use google_sheets4::{
     yup_oauth2::authenticator_delegate::InstalledFlowDelegate,
 };
 use serde_json::Value;
-use std::{future::Future, path::PathBuf, pin::Pin, process::Command};
+use std::{future::Future, path::PathBuf, pin::Pin};
 
 const TOKEN_CACHE_PATH: &str = ".albion-accountant-token.json";
 const SHEET_HEADER: [&str; 7] = ["ID", "Date", "Time", "Location", "Item", "Debit", "Credit"];
@@ -142,31 +143,6 @@ impl InstalledFlowDelegate for BrowserOpeningInstalledFlowDelegate {
             Ok(String::new())
         })
     }
-}
-
-fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    browser_open_command(url).spawn().map(|_| ())
-}
-
-#[cfg(target_os = "windows")]
-fn browser_open_command(url: &str) -> Command {
-    let mut command = Command::new("cmd");
-    command.args(["/C", "start", "", url]);
-    command
-}
-
-#[cfg(target_os = "macos")]
-fn browser_open_command(url: &str) -> Command {
-    let mut command = Command::new("open");
-    command.arg(url);
-    command
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn browser_open_command(url: &str) -> Command {
-    let mut command = Command::new("xdg-open");
-    command.arg(url);
-    command
 }
 
 impl GoogleSheetsClient {

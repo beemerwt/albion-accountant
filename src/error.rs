@@ -38,3 +38,9 @@ impl From<dotenvy::Error> for DecodeError {
         Self(value.to_string())
     }
 }
+
+impl From<rusqlite::Error> for DecodeError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self(value.to_string())
+    }
+}

@@ -1,6 +1,6 @@
 # albion-accountant
 
-CLI tool that passively captures Albion Online market traffic, decodes finalized trade rows, and appends them to Google Sheets.
+Local-first tool that passively captures Albion Online market traffic, stores finalized trade rows in SQLite, serves a browser UI, and can optionally append them to Google Sheets.
 
 ## Safety
 
@@ -38,17 +38,18 @@ There is no runtime decode-mode flag and no legacy text/regex/JSON fallback deco
 Runtime live capture is:
 
 ```text
-pcap capture backend -> live_adapter -> DecodeEngine -> TradeSemanticMapper -> SheetsClient
+pcap capture backend -> live_adapter -> DecodeEngine -> TradeSemanticMapper -> SQLite -> Web UI
 ```
 
 The capture filter controls which packets are observed; it does not select a decoder implementation.
+If Google Sheets is configured, the app also syncs stored trade rows to the configured sheet.
 
 ## Replay Path
 
 Replay mode parses pcapng bytes manually:
 
 ```text
-pcapng file bytes -> pcapng_adapter -> DecodeEngine -> TradeSemanticMapper -> dry-run rows or SheetsClient
+pcapng file bytes -> pcapng_adapter -> DecodeEngine -> TradeSemanticMapper -> SQLite -> optional SheetsClient
 ```
 
 Use replay only for fixture parity and deterministic local debugging:
@@ -56,6 +57,31 @@ Use replay only for fixture parity and deterministic local debugging:
 ```bash
 cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
 ```
+
+## Local Web UI
+
+Live capture starts a localhost webserver on a random available `127.0.0.1` port. Double-click the
+tray icon to open the web app. The app shows locally stored trades with pagination, search,
+operation filtering, and debit/credit/net totals.
+
+The default database path is the platform user data directory, such as:
+
+```text
+~/.local/share/albion-accountant/albion-accountant.sqlite3
+```
+
+Override it with `--database-path` or `ALBION_ACCOUNTANT_DATABASE_PATH`.
+
+Build the React app for embedding with:
+
+```bash
+cd webapp
+npm install
+npm run build
+```
+
+If `webapp/dist` does not exist, the Rust binary serves a small fallback page explaining how to
+build the React UI.
 
 ## Google OAuth Setup
 
@@ -97,10 +123,12 @@ cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
 ```
 
 Use `--dry-run` for local capture/replay runs that should not authenticate with, create, clear, or
-otherwise modify Google Sheets, even when `.env` contains Google configuration.
+otherwise modify Google Sheets, even when `.env` contains Google configuration. Local SQLite
+storage still records trades.
 
 Live capture on Linux starts immediately and adds an Albion Accountant tray icon. Use the tray menu
-to stop/start capture or exit the app. Replay mode remains CLI-only.
+to stop/start capture or exit the app. Double-click the tray icon to open the web UI. Replay mode
+remains CLI-only.
 
 Or explicitly pass all Google values:
 
@@ -111,9 +139,9 @@ cargo run -- \
   --sheet-name Sheet1
 ```
 
-When Google Sheets is configured, the app authenticates with OAuth, stores the token cache in
+When Google Sheets is configured and `--dry-run` is not used, the app authenticates with OAuth, stores the token cache in
 `.albion-accountant-token.json`, creates the named sheet if it is missing, verifies the header, and
-appends decoded live trades. Existing matching sheets are not cleared.
+syncs decoded trades after local SQLite persistence. Existing matching sheets are not cleared.
 
 ## Tests
 

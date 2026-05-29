@@ -1,5 +1,11 @@
 /target
 /target_windows
+/dist
+/webapp/dist
+/webapp/node_modules
+/webapp/*.tsbuildinfo
+/webapp/vite.config.js
+/webapp/vite.config.d.ts
 .codex
 .agents
 google-credentials.json

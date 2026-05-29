@@ -1,6 +1,7 @@
 use crate::{
-    LiveCaptureSettings, error::Result, google_sheets::GoogleSheetsClient, handle_live_packet,
-    live::process_live_capture_until,
+    LiveCaptureSettings, browser::open_url_in_browser, error::Result,
+    google_sheets::GoogleSheetsClient, handle_live_packet, live::process_live_capture_until,
+    store::TradeStore,
 };
 
 use std::{
@@ -16,43 +17,48 @@ use tao::{
 };
 use tokio::runtime::Handle;
 use tray_icon::{
-    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem},
 };
 
+const APP_NAME_LABEL: &str = "Albion Accountant";
 const START_CAPTURE_LABEL: &str = "Start Capture";
 const STOP_CAPTURE_LABEL: &str = "Stop Capture";
 
 enum UserEvent {
-    TrayIconEvent,
+    TrayIconEvent(tray_icon::TrayIconEvent),
     MenuEvent(tray_icon::menu::MenuEvent),
     CaptureStopped(std::result::Result<(), String>),
 }
 
 pub(crate) fn run_live_tray(
     settings: LiveCaptureSettings,
+    trade_store: TradeStore,
     sheets_client: Option<GoogleSheetsClient>,
     runtime_handle: Handle,
+    web_url: String,
 ) -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let capture_config = CaptureConfig {
         settings,
+        trade_store,
         sheets_client,
         runtime_handle,
     };
 
     let tray_menu = Menu::new();
+    let app_name = MenuItem::new(APP_NAME_LABEL, true, None);
     let toggle_capture = MenuItem::new(STOP_CAPTURE_LABEL, true, None);
     let exit = MenuItem::new("Exit", true, None);
     tray_menu
-        .append_items(&[&toggle_capture, &exit])
+        .append_items(&[&app_name, &toggle_capture, &exit])
         .map_err(|err| format!("failed to build tray menu: {err}"))?;
 
     TrayIconEvent::set_event_handler(Some({
         let proxy = proxy.clone();
-        move |_| {
-            let _ = proxy.send_event(UserEvent::TrayIconEvent);
+        move |event| {
+            let _ = proxy.send_event(UserEvent::TrayIconEvent(event));
         }
     }));
     MenuEvent::set_event_handler(Some({
@@ -62,6 +68,7 @@ pub(crate) fn run_live_tray(
         }
     }));
 
+    let app_name_id = app_name.id().clone();
     let toggle_capture_id = toggle_capture.id().clone();
     let exit_id = exit.id().clone();
     let mut tray_icon: Option<TrayIcon> = None;
@@ -84,6 +91,13 @@ pub(crate) fn run_live_tray(
                         capture.join();
                         *control_flow = ControlFlow::Exit;
                     }
+                }
+            }
+            Event::UserEvent(UserEvent::MenuEvent(event)) if event.id == app_name_id => {
+                if let Err(err) = open_url_in_browser(&web_url) {
+                    eprintln!(
+                        "WARN:albion:failed to open web app automatically: {err}. Open this URL manually: {web_url}"
+                    );
                 }
             }
             Event::UserEvent(UserEvent::MenuEvent(event)) if event.id == toggle_capture_id => {
@@ -110,7 +124,17 @@ pub(crate) fn run_live_tray(
                 capture.join_finished();
                 toggle_capture.set_text(START_CAPTURE_LABEL);
             }
-            Event::UserEvent(UserEvent::TrayIconEvent) => {}
+            Event::UserEvent(UserEvent::TrayIconEvent(TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            })) => {
+                if let Err(err) = open_url_in_browser(&web_url) {
+                    eprintln!(
+                        "WARN:albion:failed to open web app automatically: {err}. Open this URL manually: {web_url}"
+                    );
+                }
+            }
+            Event::UserEvent(UserEvent::TrayIconEvent(_)) => {}
             _ => {}
         }
     })
@@ -119,6 +143,7 @@ pub(crate) fn run_live_tray(
 #[derive(Clone)]
 struct CaptureConfig {
     settings: LiveCaptureSettings,
+    trade_store: TradeStore,
     sheets_client: Option<GoogleSheetsClient>,
     runtime_handle: Handle,
 }
@@ -140,6 +165,7 @@ impl CaptureWorker {
                     handle_live_packet(
                         &packet,
                         config.settings,
+                        &config.trade_store,
                         config.sheets_client.as_ref(),
                         &config.runtime_handle,
                     )
