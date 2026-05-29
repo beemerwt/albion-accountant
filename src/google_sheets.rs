@@ -5,16 +5,23 @@ use crate::{
 use google_sheets4::{
     Sheets,
     api::{
-        AddSheetRequest, BatchUpdateSpreadsheetRequest, ClearValuesRequest, Request,
-        SheetProperties, ValueRange,
+        AddSheetRequest, BatchUpdateSpreadsheetRequest, ClearValuesRequest,
+        DeleteDuplicatesRequest, DimensionRange, GridRange, Request, SheetProperties,
+        SortRangeRequest, SortSpec, ValueRange,
     },
     hyper_rustls, hyper_util, yup_oauth2,
+    yup_oauth2::authenticator_delegate::InstalledFlowDelegate,
 };
 use serde_json::Value;
-use std::path::PathBuf;
+use std::{future::Future, path::PathBuf, pin::Pin, process::Command};
 
 const TOKEN_CACHE_PATH: &str = ".albion-accountant-token.json";
-const SHEET_HEADER: [&str; 6] = ["Date", "Time", "Location", "Item", "Debit", "Credit"];
+const SHEET_HEADER: [&str; 7] = ["ID", "Date", "Time", "Location", "Item", "Debit", "Credit"];
+const SHEET_COLUMN_COUNT: i32 = 7;
+const ID_COLUMN_INDEX: i32 = 0;
+const DATE_COLUMN_INDEX: i32 = 1;
+const TIME_COLUMN_INDEX: i32 = 2;
+const HEADER_ROW_COUNT: i32 = 1;
 type HttpsConnector =
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
@@ -25,10 +32,12 @@ pub struct GoogleSheetsConfig {
     sheet_name: String,
 }
 
+#[derive(Clone)]
 pub struct GoogleSheetsClient {
     hub: Sheets<HttpsConnector>,
     spreadsheet_id: String,
     sheet_name: String,
+    sheet_id: i32,
 }
 
 impl GoogleSheetsConfig {
@@ -97,6 +106,7 @@ pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleS
         yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
         yup_oauth2::CustomHyperClientBuilder::from(auth_client),
     )
+    .flow_delegate(Box::new(BrowserOpeningInstalledFlowDelegate))
     .persist_tokens_to_disk(TOKEN_CACHE_PATH)
     .build()
     .await
@@ -104,22 +114,139 @@ pub async fn prepare_google_sheet(config: &GoogleSheetsConfig) -> Result<GoogleS
     let hub = Sheets::new(sheets_client, auth);
 
     ensure_sheet_exists(&hub, config).await?;
+    let sheet_id = load_sheet_id(&hub, config).await?;
     ensure_sheet_header(&hub, config).await?;
     Ok(GoogleSheetsClient {
         hub,
         spreadsheet_id: config.spreadsheet_id.clone(),
         sheet_name: config.sheet_name.clone(),
+        sheet_id,
     })
 }
 
+struct BrowserOpeningInstalledFlowDelegate;
+
+impl InstalledFlowDelegate for BrowserOpeningInstalledFlowDelegate {
+    fn present_user_url<'a>(
+        &'a self,
+        url: &'a str,
+        _need_code: bool,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            eprintln!("INFO:albion: opening Google OAuth token page in your browser: {url}");
+            if let Err(err) = open_url_in_browser(url) {
+                eprintln!(
+                    "WARN:albion: failed to open browser automatically: {err}. Open this URL manually: {url}"
+                );
+            }
+            Ok(String::new())
+        })
+    }
+}
+
+fn open_url_in_browser(url: &str) -> std::io::Result<()> {
+    browser_open_command(url).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn browser_open_command(url: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", "", url]);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn browser_open_command(url: &str) -> Command {
+    let mut command = Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn browser_open_command(url: &str) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(url);
+    command
+}
+
 impl GoogleSheetsClient {
-    pub async fn append_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
+    pub async fn upsert_values(&self, values: Vec<Vec<Value>>) -> Result<()> {
         if values.is_empty() {
             return Ok(());
         }
 
+        for row in values {
+            let Some(row_id) = row.first().map(cell_value_to_string) else {
+                continue;
+            };
+            if row_id.trim().is_empty() {
+                continue;
+            }
+
+            if let Some(row_number) = self.find_row_number_by_id(&row_id).await? {
+                self.update_row(row_number, row).await?;
+            } else {
+                self.append_row(row).await?;
+            }
+        }
+
+        self.deduplicate_ids().await?;
+        self.sort_table().await?;
+        Ok(())
+    }
+
+    async fn find_row_number_by_id(&self, id: &str) -> Result<Option<usize>> {
+        let range = sheet_id_column_range(&self.sheet_name);
+        let (_, values) = self
+            .hub
+            .spreadsheets()
+            .values_get(&self.spreadsheet_id, &range)
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to read ID column from sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(values
+            .values
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .find_map(|(index, row)| {
+                if index == 0 {
+                    return None;
+                }
+                let value = row.first().map(cell_value_to_string)?;
+                (value == id).then_some(index + 1)
+            }))
+    }
+
+    async fn update_row(&self, row_number: usize, row: Vec<Value>) -> Result<()> {
+        let range = sheet_row_range(&self.sheet_name, row_number);
+        let request = values_request(&range, vec![row]);
+
+        self.hub
+            .spreadsheets()
+            .values_update(request, &self.spreadsheet_id, &range)
+            .value_input_option("USER_ENTERED")
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to update row {row_number} in sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(())
+    }
+
+    async fn append_row(&self, row: Vec<Value>) -> Result<()> {
         let range = sheet_append_range(&self.sheet_name);
-        let request = values_request(&range, values);
+        let request = values_request(&range, vec![row]);
 
         self.hub
             .spreadsheets()
@@ -131,6 +258,68 @@ impl GoogleSheetsClient {
             .map_err(|err| {
                 DecodeError(format!(
                     "failed to append values to sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(())
+    }
+
+    async fn deduplicate_ids(&self) -> Result<()> {
+        let request = BatchUpdateSpreadsheetRequest {
+            requests: Some(vec![Request {
+                delete_duplicates: Some(DeleteDuplicatesRequest {
+                    comparison_columns: Some(vec![DimensionRange {
+                        dimension: Some("COLUMNS".to_string()),
+                        sheet_id: Some(self.sheet_id),
+                        start_index: Some(ID_COLUMN_INDEX),
+                        end_index: Some(ID_COLUMN_INDEX + 1),
+                    }]),
+                    range: Some(data_grid_range(self.sheet_id)),
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        self.hub
+            .spreadsheets()
+            .batch_update(request, &self.spreadsheet_id)
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to remove duplicate IDs from sheet '{}' in spreadsheet '{}': {err}",
+                    self.sheet_name, self.spreadsheet_id
+                ))
+            })?;
+
+        Ok(())
+    }
+
+    async fn sort_table(&self) -> Result<()> {
+        let request = BatchUpdateSpreadsheetRequest {
+            requests: Some(vec![Request {
+                sort_range: Some(SortRangeRequest {
+                    range: Some(data_grid_range(self.sheet_id)),
+                    sort_specs: Some(vec![
+                        ascending_sort(DATE_COLUMN_INDEX),
+                        ascending_sort(TIME_COLUMN_INDEX),
+                    ]),
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        self.hub
+            .spreadsheets()
+            .batch_update(request, &self.spreadsheet_id)
+            .doit()
+            .await
+            .map_err(|err| {
+                DecodeError(format!(
+                    "failed to sort sheet '{}' in spreadsheet '{}': {err}",
                     self.sheet_name, self.spreadsheet_id
                 ))
             })?;
@@ -223,6 +412,34 @@ where
     Ok(())
 }
 
+async fn load_sheet_id<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<i32>
+where
+    C: google_sheets4::common::Connector,
+{
+    let (_, spreadsheet) = hub
+        .spreadsheets()
+        .get(&config.spreadsheet_id)
+        .include_grid_data(false)
+        .param("fields", "sheets.properties(sheetId,title)")
+        .doit()
+        .await
+        .map_err(|err| DecodeError(format!("failed to load spreadsheet metadata: {err}")))?;
+
+    spreadsheet
+        .sheets
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|sheet| sheet.properties)
+        .find(|properties| properties.title.as_ref() == Some(&config.sheet_name))
+        .and_then(|properties| properties.sheet_id)
+        .ok_or_else(|| {
+            DecodeError(format!(
+                "failed to find sheet '{}' in spreadsheet '{}'",
+                config.sheet_name, config.spreadsheet_id
+            ))
+        })
+}
+
 async fn clear_sheet_values<C>(hub: &Sheets<C>, config: &GoogleSheetsConfig) -> Result<()>
 where
     C: google_sheets4::common::Connector,
@@ -278,11 +495,19 @@ fn sheet_range(sheet_name: &str) -> String {
 }
 
 fn sheet_header_range(sheet_name: &str) -> String {
-    format!("{}!A1:F1", sheet_range(sheet_name))
+    format!("{}!A1:G1", sheet_range(sheet_name))
 }
 
 fn sheet_append_range(sheet_name: &str) -> String {
-    format!("{}!A:F", sheet_range(sheet_name))
+    format!("{}!A:G", sheet_range(sheet_name))
+}
+
+fn sheet_id_column_range(sheet_name: &str) -> String {
+    format!("{}!A:A", sheet_range(sheet_name))
+}
+
+fn sheet_row_range(sheet_name: &str, row_number: usize) -> String {
+    format!("{}!A{row_number}:G{row_number}", sheet_range(sheet_name))
 }
 
 fn values_request(range: &str, values: Vec<Vec<Value>>) -> ValueRange {
@@ -309,6 +534,34 @@ fn header_is_empty(values: Option<&[Vec<Value>]>) -> bool {
     values.is_none_or(|rows| rows.first().is_none_or(Vec::is_empty))
 }
 
+fn cell_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn data_grid_range(sheet_id: i32) -> GridRange {
+    GridRange {
+        sheet_id: Some(sheet_id),
+        start_row_index: Some(HEADER_ROW_COUNT),
+        start_column_index: Some(0),
+        end_column_index: Some(SHEET_COLUMN_COUNT),
+        ..Default::default()
+    }
+}
+
+fn ascending_sort(column_index: i32) -> SortSpec {
+    SortSpec {
+        dimension_index: Some(column_index),
+        sort_order: Some("ASCENDING".to_string()),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +570,7 @@ mod tests {
     #[test]
     fn header_matches_exact_expected_values() {
         let values = vec![vec![
+            json!("ID"),
             json!("Date"),
             json!("Time"),
             json!("Location"),
@@ -331,6 +585,7 @@ mod tests {
     #[test]
     fn header_rejects_mismatched_values() {
         let values = vec![vec![
+            json!("ID"),
             json!("Date"),
             json!("Time"),
             json!("Place"),
@@ -349,5 +604,11 @@ mod tests {
         assert!(header_is_empty(None));
         assert!(header_is_empty(Some(&[])));
         assert!(header_is_empty(Some(&empty_row)));
+    }
+
+    #[test]
+    fn cell_values_convert_to_matchable_ids() {
+        assert_eq!(cell_value_to_string(&json!("14987113607")), "14987113607");
+        assert_eq!(cell_value_to_string(&json!(14987113607_i64)), "14987113607");
     }
 }

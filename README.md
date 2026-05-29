@@ -10,6 +10,12 @@ This app only observes packets. It does not modify, inject into, or interfere wi
 
 - `libpcap-dev` on Debian/Ubuntu
 - packet-capture privileges, either root or `cap_net_raw,cap_net_admin`
+- tray icon support on Debian/Ubuntu:
+  `sudo apt install libgtk-3-dev libayatana-appindicator3-dev`
+  or use `libappindicator3-dev` instead of `libayatana-appindicator3-dev`
+
+On Ubuntu GNOME Wayland, the tray icon also needs AppIndicator/StatusNotifier support enabled.
+Ubuntu commonly provides this through its AppIndicator GNOME Shell extension.
 
 ## Decode Model
 
@@ -92,6 +98,9 @@ cargo run -- --dry-run --pcap-file ./quick_buy_and_sell.pcapng
 
 Use `--dry-run` for local capture/replay runs that should not authenticate with, create, clear, or
 otherwise modify Google Sheets, even when `.env` contains Google configuration.
+
+Live capture on Linux starts immediately and adds an Albion Accountant tray icon. Use the tray menu
+to stop/start capture or exit the app. Replay mode remains CLI-only.
 
 Or explicitly pass all Google values:
 

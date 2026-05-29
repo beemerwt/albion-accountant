@@ -5,14 +5,35 @@ use albion_network_lib::DecodedPacket;
 use albion_network_lib::{HostFilter, PhotonParser, extract_udp_payload};
 
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, fs, mem, os::fd::RawFd, path::Path};
+use std::{
+    ffi::CString,
+    fs, mem,
+    os::fd::RawFd,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 #[cfg(target_os = "linux")]
 const ETH_P_ALL: u16 = 0x0003;
+#[cfg(target_os = "linux")]
+const CAPTURE_POLL_TIMEOUT_MS: i32 = 250;
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn process_live_capture(
     debug: bool,
+    on_packet: impl FnMut(DecodedPacket) -> Result<()>,
+) -> Result<()> {
+    process_live_capture_until(debug, Arc::new(AtomicBool::new(false)), on_packet)
+}
+
+#[cfg(target_os = "linux")]
+pub fn process_live_capture_until(
+    debug: bool,
+    stop_requested: Arc<AtomicBool>,
     mut on_packet: impl FnMut(DecodedPacket) -> Result<()>,
 ) -> Result<()> {
     eprintln!("INFO:albion:starting live capture on all available interfaces");
@@ -47,13 +68,25 @@ pub fn process_live_capture(
     let mut packet_number = 0usize;
     let mut frame = vec![0u8; 65536];
 
-    loop {
-        let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, -1) };
+    while !stop_requested.load(Ordering::Relaxed) {
+        let ready = unsafe {
+            libc::poll(
+                polls.as_mut_ptr(),
+                polls.len() as libc::nfds_t,
+                CAPTURE_POLL_TIMEOUT_MS,
+            )
+        };
         if ready < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
+        if ready == 0 {
+            continue;
+        }
 
         for index in 0..polls.len() {
+            if stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
             if polls[index].revents & libc::POLLIN == 0 {
                 continue;
             }
@@ -97,6 +130,9 @@ pub fn process_live_capture(
             emitted_packets = parser.decoded_packets().len();
         }
     }
+
+    eprintln!("INFO:albion:live capture stopped");
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
