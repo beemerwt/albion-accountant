@@ -2,6 +2,7 @@ use crate::{
     error::{DecodeError, Result},
     trades::{TradeOperation, TradeRecord},
 };
+use albion_network_lib::models::TradeType;
 use chrono::{DateTime, Local};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -46,12 +47,15 @@ pub struct TradeSummary {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TradeView {
-    pub id: String,
+    pub id: i32,
+    pub auction_id: String,
     pub timestamp: String,
     pub date: String,
     pub time: String,
     pub location: String,
+    pub amount: i32,
     pub item: String,
+    pub trade_type: TradeType,
     pub operation: TradeOperation,
     pub debit: Option<i64>,
     pub credit: Option<i64>,
@@ -84,9 +88,12 @@ impl TradeStore {
         connection.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS trades (
-                id TEXT PRIMARY KEY NOT NULL,
+                id INTEGER PRIMARY KEY,
+                auction_id TEXT NOT NULL,
+                trade_type TEXT NOT NULL CHECK(trade_type IN ('order', 'instant')),
                 timestamp TEXT NOT NULL,
                 location TEXT NOT NULL,
+                amount INTEGER,
                 item TEXT NOT NULL,
                 operation TEXT NOT NULL CHECK(operation IN ('buy', 'sell')),
                 debit INTEGER,
@@ -98,6 +105,9 @@ impl TradeStore {
             CREATE INDEX IF NOT EXISTS idx_trades_operation ON trades(operation);
             CREATE INDEX IF NOT EXISTS idx_trades_item ON trades(item);
             CREATE INDEX IF NOT EXISTS idx_trades_location ON trades(location);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_order_auction_id
+                ON trades(auction_id)
+                WHERE trade_type = 'order';
             ",
         )?;
         Ok(())
@@ -107,21 +117,25 @@ impl TradeStore {
         let connection = self.lock()?;
         connection.execute(
             "
-            INSERT INTO trades (id, timestamp, location, item, operation, debit, credit)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO trades (auction_id, trade_type, timestamp, location, amount, item, operation, debit, credit)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(auction_id) WHERE trade_type = 'order'
+            DO UPDATE SET
                 timestamp = excluded.timestamp,
                 location = excluded.location,
+                amount = excluded.amount,
                 item = excluded.item,
+                trade_type = excluded.trade_type,
                 operation = excluded.operation,
                 debit = excluded.debit,
-                credit = excluded.credit,
-                updated_at = CURRENT_TIMESTAMP
+                credit = excluded.credit
             ",
             params![
                 trade.id,
+                trade.trade_type.as_str(),
                 trade.timestamp.to_rfc3339(),
                 trade.location,
+                trade.amount,
                 trade.item,
                 trade.operation_str(),
                 trade.debit,
@@ -148,7 +162,7 @@ impl TradeStore {
             "
             SELECT COUNT(*)
             FROM trades
-            WHERE (?1 IS NULL OR item LIKE ?1 OR location LIKE ?1 OR id LIKE ?1)
+            WHERE (?1 IS NULL OR item LIKE ?1 OR location LIKE ?1 OR auction_id LIKE ?1)
               AND (?2 IS NULL OR operation = ?2)
             ",
             params![search.as_deref(), operation.as_deref()],
@@ -157,9 +171,9 @@ impl TradeStore {
 
         let mut statement = connection.prepare(
             "
-            SELECT id, timestamp, location, item, operation, debit, credit
+            SELECT id, auction_id, trade_type, timestamp, location, amount, item, operation, debit, credit
             FROM trades
-            WHERE (?1 IS NULL OR item LIKE ?1 OR location LIKE ?1 OR id LIKE ?1)
+            WHERE (?1 IS NULL OR item LIKE ?1 OR location LIKE ?1 OR auction_id LIKE ?1)
               AND (?2 IS NULL OR operation = ?2)
             ORDER BY timestamp DESC, id DESC
             LIMIT ?3 OFFSET ?4
@@ -228,11 +242,11 @@ impl TradeStore {
 }
 
 fn row_to_trade_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<TradeView> {
-    let timestamp: String = row.get(1)?;
+    let timestamp: String = row.get(3)?;
     let parsed_timestamp = DateTime::parse_from_rfc3339(&timestamp)
         .map(|value| value.with_timezone(&Local))
         .ok();
-    let operation: String = row.get(4)?;
+    let operation: String = row.get(7)?;
     let operation = TradeOperation::try_from(operation.as_str()).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             4,
@@ -241,8 +255,24 @@ fn row_to_trade_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<TradeView> {
         )
     })?;
 
+    let trade_type_str: String = row.get(2)?;
+    let trade_type = TradeType::from_str(trade_type_str.as_str());
+
+    let (TradeType::Order | TradeType::Instant) = trade_type else {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid trade_type: {trade_type_str}"),
+            )),
+        ));
+    };
+
     Ok(TradeView {
         id: row.get(0)?,
+        auction_id: row.get(1)?,
+        trade_type,
         timestamp,
         date: parsed_timestamp
             .map(|timestamp| timestamp.format("%m/%d/%Y").to_string())
@@ -250,11 +280,12 @@ fn row_to_trade_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<TradeView> {
         time: parsed_timestamp
             .map(|timestamp| timestamp.format("%I:%M %p").to_string())
             .unwrap_or_default(),
-        location: row.get(2)?,
-        item: row.get(3)?,
+        location: row.get(4)?,
+        amount: row.get(5)?,
+        item: row.get(6)?,
         operation,
-        debit: row.get(5)?,
-        credit: row.get(6)?,
+        debit: row.get(8)?,
+        credit: row.get(9)?,
     })
 }
 
@@ -263,9 +294,9 @@ pub fn trade_by_id(store: &TradeStore, id: &str) -> Result<Option<TradeView>> {
     let result = connection
         .query_row(
             "
-            SELECT id, timestamp, location, item, operation, debit, credit
+            SELECT id, auction_id, trade_type, timestamp, location, amount, item, operation, debit, credit
             FROM trades
-            WHERE id = ?1
+            WHERE auction_id = ?1
             ",
             params![id],
             row_to_trade_view,
@@ -277,16 +308,31 @@ pub fn trade_by_id(store: &TradeStore, id: &str) -> Result<Option<TradeView>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use albion_network_lib::models::TradeType;
     use chrono::TimeZone;
 
     #[test]
     fn upsert_is_idempotent_and_updates_values() {
         let store = memory_store();
         store
-            .upsert_trade(&trade("1", TradeOperation::Buy, 100, None, "Bag"))
+            .upsert_trade(&trade(
+                "1",
+                TradeType::Order,
+                TradeOperation::Buy,
+                100,
+                None,
+                "Bag",
+            ))
             .unwrap();
         store
-            .upsert_trade(&trade("1", TradeOperation::Sell, None, 250, "Cape"))
+            .upsert_trade(&trade(
+                "1",
+                TradeType::Order,
+                TradeOperation::Sell,
+                None,
+                250,
+                "Cape",
+            ))
             .unwrap();
 
         assert_eq!(store.trade_count().unwrap(), 1);
@@ -300,13 +346,34 @@ mod tests {
     fn list_trades_paginates_and_filters() {
         let store = memory_store();
         store
-            .upsert_trade(&trade("1", TradeOperation::Buy, 100, None, "Bag"))
+            .upsert_trade(&trade(
+                "1",
+                TradeType::Instant,
+                TradeOperation::Buy,
+                100,
+                None,
+                "Bag",
+            ))
             .unwrap();
         store
-            .upsert_trade(&trade("2", TradeOperation::Sell, None, 250, "Cape"))
+            .upsert_trade(&trade(
+                "2",
+                TradeType::Instant,
+                TradeOperation::Sell,
+                None,
+                250,
+                "Cape",
+            ))
             .unwrap();
         store
-            .upsert_trade(&trade("3", TradeOperation::Sell, None, 300, "Bag"))
+            .upsert_trade(&trade(
+                "3",
+                TradeType::Instant,
+                TradeOperation::Sell,
+                None,
+                300,
+                "Bag",
+            ))
             .unwrap();
 
         let list = store
@@ -320,17 +387,31 @@ mod tests {
 
         assert_eq!(list.total, 1);
         assert_eq!(list.items.len(), 1);
-        assert_eq!(list.items[0].id, "3");
+        assert_eq!(list.items[0].auction_id, "3");
     }
 
     #[test]
     fn summary_totals_debit_credit_and_net() {
         let store = memory_store();
         store
-            .upsert_trade(&trade("1", TradeOperation::Buy, 100, None, "Bag"))
+            .upsert_trade(&trade(
+                "1",
+                TradeType::Instant,
+                TradeOperation::Buy,
+                100,
+                None,
+                "Bag",
+            ))
             .unwrap();
         store
-            .upsert_trade(&trade("2", TradeOperation::Sell, None, 250, "Cape"))
+            .upsert_trade(&trade(
+                "2",
+                TradeType::Instant,
+                TradeOperation::Sell,
+                None,
+                250,
+                "Cape",
+            ))
             .unwrap();
 
         let summary = store.summary().unwrap();
@@ -351,16 +432,19 @@ mod tests {
     }
 
     fn trade(
-        id: &str,
+        auction_id: &str,
+        trade_type: TradeType,
         operation: TradeOperation,
         debit: impl Into<Option<i64>>,
         credit: impl Into<Option<i64>>,
         item: &str,
     ) -> TradeRecord {
         TradeRecord {
-            id: id.to_string(),
+            id: auction_id.to_string(),
+            trade_type,
             timestamp: Local.with_ymd_and_hms(2026, 5, 29, 12, 0, 0).unwrap(),
             location: "Bridgewatch".to_string(),
+            amount: 1,
             item: item.to_string(),
             operation,
             debit: debit.into(),

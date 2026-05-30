@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use crate::{
     error::{DecodeError, Result},
     store::{TradeQuery, TradeStore},
@@ -8,11 +10,18 @@ use axum::{
     body::Body,
     extract::{Query, State},
     http::{HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::get,
 };
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::cors::{Any, CorsLayer};
 
 include!(concat!(env!("OUT_DIR"), "/webapp_assets.rs"));
@@ -20,17 +29,42 @@ include!(concat!(env!("OUT_DIR"), "/webapp_assets.rs"));
 #[derive(Clone)]
 struct AppState {
     store: TradeStore,
+    tx: broadcast::Sender<String>,
+}
+
+#[derive(Clone)]
+pub struct WebNotifier {
+    tx: broadcast::Sender<String>,
+}
+
+impl WebNotifier {
+    pub fn trades_updated(&self) {
+        let _ = self.tx.send("trades_updated".to_string());
+    }
+
+    pub fn send(&self, event: impl Into<String>) {
+        let _ = self.tx.send(event.into());
+    }
 }
 
 pub struct WebServer {
     pub url: String,
+    pub notifier: WebNotifier,
 }
 
 pub async fn start_web_server(store: TradeStore) -> Result<WebServer> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let listener = TcpListener::bind(("127.0.0.1", 42309)).await?;
     let address = listener.local_addr()?;
     let url = format!("http://{address}");
-    let app = router(store);
+
+    let (tx, _) = broadcast::channel::<String>(100);
+    let state = Arc::new(AppState {
+        tx: tx.clone(),
+        store,
+    });
+    let app = router(state);
+
+    let notifier = WebNotifier { tx };
 
     tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, app).await {
@@ -39,17 +73,34 @@ pub async fn start_web_server(store: TradeStore) -> Result<WebServer> {
     });
 
     eprintln!("INFO:albion:web app listening at {url}");
-    Ok(WebServer { url })
+    Ok(WebServer { url, notifier })
 }
 
-fn router(store: TradeStore) -> Router {
+async fn events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
+    let rx = state.tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
+        Ok(text) => Some(Ok(Event::default().data(text))),
+        Err(_) => None,
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/events", get(events))
         .route("/api/trades", get(api_trades))
         .route("/api/summary", get(api_summary))
         .route("/", get(index))
         .route("/{*path}", get(asset))
         .layer(CorsLayer::new().allow_origin(Any))
-        .with_state(AppState { store })
+        .with_state(state.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +112,7 @@ struct TradeQueryParams {
 }
 
 async fn api_trades(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<TradeQueryParams>,
 ) -> impl IntoResponse {
     let operation = match params
@@ -86,7 +137,7 @@ async fn api_trades(
     }
 }
 
-async fn api_summary(State(state): State<AppState>) -> impl IntoResponse {
+async fn api_summary(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.store.summary() {
         Ok(summary) => axum::Json(summary).into_response(),
         Err(err) => server_error(err),
@@ -137,13 +188,19 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
+    fn test_app(store: TradeStore) -> Router {
+        let (tx, _) = broadcast::channel::<String>(100);
+        let state = Arc::new(AppState { store, tx });
+        router(state)
+    }
+
     #[tokio::test]
     async fn trades_api_returns_paginated_rows() {
         let store = test_store();
         store
             .upsert_trade(&trade("1", TradeOperation::Buy))
             .unwrap();
-        let app = router(store);
+        let app = test_app(store);
 
         let response = app
             .oneshot(
@@ -159,7 +216,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["total"], 1);
-        assert_eq!(json["items"][0]["id"], "1");
+        assert_eq!(json["items"][0]["id"], 1);
     }
 
     #[tokio::test]
@@ -168,7 +225,7 @@ mod tests {
         store
             .upsert_trade(&trade("1", TradeOperation::Buy))
             .unwrap();
-        let app = router(store);
+        let app = test_app(store);
 
         let response = app
             .oneshot(
@@ -204,7 +261,9 @@ mod tests {
             id: id.to_string(),
             timestamp: Local.with_ymd_and_hms(2026, 5, 29, 12, 0, 0).unwrap(),
             location: "Bridgewatch".to_string(),
+            amount: 1,
             item: "T4_BAG".to_string(),
+            trade_type: albion_network_lib::models::TradeType::Instant,
             operation,
             debit: (operation == TradeOperation::Buy).then_some(100),
             credit: (operation == TradeOperation::Sell).then_some(150),

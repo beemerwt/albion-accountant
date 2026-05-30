@@ -2,3 +2,4 @@
 # Any address listed here will have it's packets processed
 # Addresses are in CIDR format
 5.188.125.0/24
+85.234.70.0/24

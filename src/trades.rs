@@ -1,3 +1,4 @@
+use albion_network_lib::models::TradeType;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,7 +8,9 @@ pub struct TradeRecord {
     pub id: String,
     pub timestamp: DateTime<Local>,
     pub location: String,
+    pub amount: i64,
     pub item: String,
+    pub trade_type: TradeType,
     pub operation: TradeOperation,
     pub debit: Option<i64>,
     pub credit: Option<i64>,
@@ -35,6 +38,7 @@ impl TradeRecord {
             json!(self.date()),
             json!(self.time()),
             json!(self.location),
+            json!(self.amount),
             json!(self.item),
             optional_silver_value(self.debit),
             optional_silver_value(self.credit),

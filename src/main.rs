@@ -17,11 +17,15 @@ use crate::{
     google_sheets::{GoogleSheetsClient, GoogleSheetsConfig, prepare_google_sheet},
     store::TradeStore,
     trades::{TradeOperation, TradeRecord},
+    web::WebNotifier,
 };
 
 #[cfg(not(target_os = "linux"))]
 use crate::live::process_live_capture;
-use albion_network_lib::{DecodedPacket, ExtractedPacket, models::OperationType};
+use albion_network_lib::{
+    DecodedPacket, ExtractedPacket,
+    models::{OperationType, TradeType},
+};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::Parser;
 use std::path::Path;
@@ -85,7 +89,7 @@ async fn run_live(
         trade_store,
         sheets_client,
         Handle::current(),
-        web_server.url,
+        web_server,
     )
 }
 
@@ -115,12 +119,14 @@ fn handle_live_packet(
     trade_store: &TradeStore,
     sheets_client: Option<&GoogleSheetsClient>,
     runtime_handle: &Handle,
+    notifier: &WebNotifier,
 ) -> Result<()> {
     if settings.all || has_structured_extract(packet) {
         print_packet(packet, settings.json)?;
     }
     if let Some(trade) = trade_record_from_packet(packet) {
         trade_store.upsert_trade(&trade)?;
+        notifier.trades_updated();
         if let Some(client) = sheets_client {
             runtime_handle.block_on(client.upsert_values(vec![trade.into_sheet_values()]))?;
         }
@@ -232,19 +238,21 @@ fn trade_record_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
 }
 
 fn mail_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
-    let operation = match packet {
-        DecodedPacket::Operation(operation) => operation,
-        DecodedPacket::Event(_) => return None,
-        DecodedPacket::Unknown(_) => return None,
+    let DecodedPacket::Operation(operation) = packet else {
+        return None;
     };
 
     let Some(ExtractedPacket::AlbionMail(mail)) = operation.extracted.as_ref() else {
         return None;
     };
 
-    let Some(timestamp) = utc_seconds_to_local(mail.received) else {
-        return None;
-    };
+    println!("Got a mail packet");
+
+    let timestamp = Utc
+        .timestamp_millis_opt(mail.received)
+        .single()
+        .unwrap()
+        .with_timezone(&Local);
 
     let location = mail
         .location
@@ -258,17 +266,17 @@ fn mail_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
         mail.id.to_string(),
         timestamp,
         location,
+        mail.partial_amount as i64,
         item_label(mail.item_name.as_deref(), &mail.item_id),
         mail.total_silver,
+        mail.trade_type.clone(),
         OperationType::from_auction_type(&mail.auction_type, &mail.trade_type),
     )
 }
 
 fn auction_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> {
-    let operation = match packet {
-        DecodedPacket::Operation(operation) => operation,
-        DecodedPacket::Event(_) => return None,
-        DecodedPacket::Unknown(_) => return None,
+    let DecodedPacket::Operation(operation) = packet else {
+        return None;
     };
 
     let Some(ExtractedPacket::AuctionTradeResponse(response)) = operation.extracted.as_ref() else {
@@ -290,14 +298,22 @@ fn auction_trade_row_from_packet(packet: &DecodedPacket) -> Option<TradeRecord> 
         .or(order.location.location_name.as_ref())
         .cloned()
         .unwrap_or_default();
-    let timestamp = Local::now();
+    let amount = trade.amount?;
+    let trade_type = trade.trade_type.clone();
+    let timestamp = Utc
+        .timestamp_millis_opt(trade.timestamp)
+        .single()
+        .unwrap()
+        .with_timezone(&Local);
 
     row_from_operation(
         id,
         timestamp,
         location,
+        amount,
         item_label(order.item_name.as_deref(), &order.item_id),
         silver,
+        trade_type,
         trade.operation.clone(),
     )
 }
@@ -306,31 +322,29 @@ fn row_from_operation(
     id: String,
     timestamp: DateTime<Local>,
     location: String,
+    amount: i64,
     item: String,
     silver: i64,
+    trade_type: TradeType,
     operation: OperationType,
 ) -> Option<TradeRecord> {
-    match operation {
-        OperationType::Buy => Some(TradeRecord {
-            id,
-            timestamp,
-            location,
-            item,
-            operation: TradeOperation::Buy,
-            debit: Some(silver),
-            credit: None,
-        }),
-        OperationType::Sell => Some(TradeRecord {
-            id,
-            timestamp,
-            location,
-            item,
-            operation: TradeOperation::Sell,
-            debit: None,
-            credit: Some(silver),
-        }),
-        OperationType::Unknown(_) => None,
-    }
+    let (operation, debit, credit) = match operation {
+        OperationType::Buy => (TradeOperation::Buy, Some(silver), None),
+        OperationType::Sell => (TradeOperation::Sell, None, Some(silver)),
+        OperationType::Unknown(_) => return None,
+    };
+
+    Some(TradeRecord {
+        id,
+        trade_type,
+        timestamp,
+        location,
+        amount,
+        item,
+        operation,
+        debit,
+        credit,
+    })
 }
 
 fn item_label(item_name: Option<&str>, item_id: &str) -> String {
@@ -355,8 +369,10 @@ mod tests {
             "14987113607".to_string(),
             timestamp,
             "Bridgewatch".to_string(),
+            1,
             "T4_BAG".to_string(),
             1000,
+            TradeType::Instant,
             OperationType::Buy,
         )
         .unwrap();
@@ -378,8 +394,10 @@ mod tests {
             "14987113607".to_string(),
             timestamp,
             "Bridgewatch".to_string(),
+            1,
             "T4_BAG".to_string(),
             1500,
+            TradeType::Instant,
             OperationType::Sell,
         )
         .unwrap();
@@ -396,8 +414,10 @@ mod tests {
                 "14987113607".to_string(),
                 Local.with_ymd_and_hms(2026, 5, 27, 21, 41, 0).unwrap(),
                 "Bridgewatch".to_string(),
+                1,
                 "T4_BAG".to_string(),
                 1000,
+                TradeType::Instant,
                 OperationType::Unknown("missing_cached_order".to_string()),
             )
             .is_none()
@@ -417,7 +437,9 @@ mod tests {
             id: "14987113607".to_string(),
             timestamp: Local.with_ymd_and_hms(2026, 5, 27, 21, 41, 0).unwrap(),
             location: "Bridgewatch".to_string(),
+            amount: 1,
             item: "T4_BAG".to_string(),
+            trade_type: TradeType::Instant,
             operation: TradeOperation::Sell,
             debit: None,
             credit: Some(1500),
@@ -431,6 +453,7 @@ mod tests {
                 json!("05/27/2026"),
                 json!("09:41 PM"),
                 json!("Bridgewatch"),
+                json!(1),
                 json!("T4_BAG"),
                 json!(""),
                 json!(1500),

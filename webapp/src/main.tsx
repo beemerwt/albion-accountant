@@ -12,6 +12,7 @@ type Trade = {
   location: string;
   item: string;
   operation: Operation;
+  amount: number;
   debit: number | null;
   credit: number | null;
 };
@@ -59,21 +60,32 @@ function App() {
     setLoading(true);
     setError(null);
 
-    Promise.all([
-      fetch(`/api/trades?${params}`, { signal: controller.signal }).then(expectJson<TradeList>),
-      fetch('/api/summary', { signal: controller.signal }).then(expectJson<Summary>)
-    ])
-      .then(([tradeList, tradeSummary]) => {
-        setTrades(tradeList);
-        setSummary(tradeSummary);
-      })
-      .catch((err: unknown) => {
-        if ((err as Error).name !== 'AbortError') {
-          setError((err as Error).message || 'Failed to load trades');
+    async function refreshList() {
+        try {
+            const [tradeList, tradeSummary] = await Promise.all([
+                fetch(`/api/trades?${params}`, { signal: controller.signal }).then(expectJson<TradeList>),
+                fetch('/api/summary', { signal: controller.signal }).then(expectJson<Summary>)
+            ]);
+            
+            setTrades(tradeList);
+            setSummary(tradeSummary);
+        } catch (err: unknown) {
+            if ((err as Error).name !== 'AbortError') {
+                setError((err as Error).message || 'Failed to load trades');
+            }
+        } finally {
+            setLoading(false);
         }
-      })
-      .finally(() => setLoading(false));
+    }
+    
+    const events = new EventSource("/events");
+    events.onmessage = (event) => {
+        if (event.data == "trades_updated") {
+            refreshList();
+        }
+    }
 
+    refreshList();
     return () => controller.abort();
   }, [page, query, operation, refreshKey]);
 
@@ -126,30 +138,32 @@ function App() {
         <table>
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Time</th>
-              <th>Location</th>
-              <th>Item</th>
-              <th>Operation</th>
-              <th className="numeric">Debit</th>
-              <th className="numeric">Credit</th>
+              <th colSpan={1}>Date</th>
+              <th colSpan={1}>Time</th>
+              <th colSpan={2}>Location</th>
+              <th colSpan={1}>Amount</th>
+              <th colSpan={3}>Item</th>
+              <th colSpan={1}>Operation</th>
+              <th className="numeric" colSpan={1}>Debit</th>
+              <th className="numeric" colSpan={1}>Credit</th>
             </tr>
           </thead>
           <tbody>
             {trades?.items.map((trade) => (
               <tr key={trade.id}>
-                <td>{trade.date}</td>
-                <td>{trade.time}</td>
-                <td>{trade.location}</td>
-                <td>{trade.item}</td>
-                <td><span className={`op ${trade.operation}`}>{trade.operation}</span></td>
+                <td colSpan={1}>{trade.date}</td>
+                <td colSpan={1}>{trade.time}</td>
+                <td colSpan={2}>{trade.location}</td>
+                <td colSpan={1}>{trade.amount}</td>
+                <td colSpan={3}>{trade.item}</td>
+                <td colSpan={1}><span className={`op ${trade.operation}`}>{trade.operation}</span></td>
                 <td className="numeric">{formatOptionalSilver(trade.debit)}</td>
                 <td className="numeric">{formatOptionalSilver(trade.credit)}</td>
               </tr>
             ))}
             {!loading && trades?.items.length === 0 ? (
               <tr>
-                <td colSpan={7} className="empty">No trades match the current filters.</td>
+                <td colSpan={8} className="empty">No trades match the current filters.</td>
               </tr>
             ) : null}
           </tbody>

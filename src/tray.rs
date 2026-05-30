@@ -1,7 +1,12 @@
 use crate::{
-    LiveCaptureSettings, browser::open_url_in_browser, error::Result,
-    google_sheets::GoogleSheetsClient, handle_live_packet, live::process_live_capture_until,
+    LiveCaptureSettings,
+    browser::open_url_in_browser,
+    error::Result,
+    google_sheets::GoogleSheetsClient,
+    handle_live_packet,
+    live::process_live_capture_until,
     store::TradeStore,
+    web::{WebNotifier, WebServer},
 };
 
 use std::{
@@ -36,7 +41,7 @@ pub(crate) fn run_live_tray(
     trade_store: TradeStore,
     sheets_client: Option<GoogleSheetsClient>,
     runtime_handle: Handle,
-    web_url: String,
+    web_server: WebServer,
 ) -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -72,7 +77,10 @@ pub(crate) fn run_live_tray(
     let toggle_capture_id = toggle_capture.id().clone();
     let exit_id = exit.id().clone();
     let mut tray_icon: Option<TrayIcon> = None;
-    let mut capture = CaptureWorker::start(capture_config.clone(), proxy.clone());
+    let web_url = web_server.url.clone();
+    let web_notifier = web_server.notifier.clone();
+    let mut capture =
+        CaptureWorker::start(capture_config.clone(), proxy.clone(), web_notifier.clone());
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -106,7 +114,7 @@ pub(crate) fn run_live_tray(
                     capture.join();
                     toggle_capture.set_text(START_CAPTURE_LABEL);
                 } else {
-                    capture = CaptureWorker::start(capture_config.clone(), proxy.clone());
+                    capture = CaptureWorker::start(capture_config.clone(), proxy.clone(), web_notifier.clone());
                     toggle_capture.set_text(STOP_CAPTURE_LABEL);
                 }
             }
@@ -128,6 +136,7 @@ pub(crate) fn run_live_tray(
                 button: MouseButton::Left,
                 ..
             })) => {
+                let web_url = web_server.url.clone();
                 if let Err(err) = open_url_in_browser(&web_url) {
                     eprintln!(
                         "WARN:albion:failed to open web app automatically: {err}. Open this URL manually: {web_url}"
@@ -154,7 +163,11 @@ struct CaptureWorker {
 }
 
 impl CaptureWorker {
-    fn start(config: CaptureConfig, proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn start(
+        config: CaptureConfig,
+        proxy: EventLoopProxy<UserEvent>,
+        notifier: WebNotifier,
+    ) -> Self {
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop_requested = Arc::clone(&stop_requested);
         let join_handle = thread::spawn(move || {
@@ -168,6 +181,7 @@ impl CaptureWorker {
                         &config.trade_store,
                         config.sheets_client.as_ref(),
                         &config.runtime_handle,
+                        &notifier,
                     )
                 },
             )
